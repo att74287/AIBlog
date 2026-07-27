@@ -1007,7 +1007,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
               onClick={onEmergencyPurge}
               className="text-xs text-slate-500 hover:text-slate-300 font-mono transition-colors"
             >
-              ← Return to Covert Article Page
+              ← Return to AIBlog Article Page
             </button>
           </div>
 

@@ -20,7 +20,7 @@ export default function CovertHomePage({ onUnlockPortal }) {
             </div>
             <div>
               <h1 className="font-serif text-2xl font-bold tracking-tight text-[#1c1917]">
-                AI Intelligence Digest
+                AIBlog Intelligence Digest
               </h1>
               <p className="text-xs text-[#78716c] font-mono">Research, Advantages & Applications of Artificial Intelligence</p>
             </div>
@@ -178,8 +178,8 @@ export default function CovertHomePage({ onUnlockPortal }) {
 
       {/* FOOTER - Purely Informational, No Links */}
       <footer className="bg-[#1c1917] text-[#e7d8c9] py-8 px-6 border-t border-[#38322e] text-center text-xs space-y-2 font-mono">
-        <p>AI Intelligence Digest • Educational Overview of Artificial Intelligence</p>
-        <p className="text-[#786b5e]">© {new Date().getFullYear()} AI Knowledge Foundation. All Rights Reserved.</p>
+        <p>AIBlog • Educational Overview of Artificial Intelligence</p>
+        <p className="text-[#786b5e]">© {new Date().getFullYear()} AIBlog Foundation. All Rights Reserved.</p>
       </footer>
 
     </div>
