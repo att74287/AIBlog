@@ -89,6 +89,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
   const [editingUserId, setEditingUserId] = useState(null);
   const [editUsername, setEditUsername] = useState('');
   const [editPasskey, setEditPasskey] = useState('');
+  const [editRole, setEditRole] = useState('User');
 
   // REALTIME ENCRYPTED ROOM CHAT STATE & BROADCAST
   const [selectedRoom, setSelectedRoom] = useState('#general-vault');
@@ -397,7 +398,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
     };
   }, [onEmergencyPurge]);
 
-  // HANDLE GATEWAY LOGIN VERIFICATION (USER LOGIN vs ADMIN LOGIN)
+  // HANDLE GATEWAY LOGIN VERIFICATION (SMART AUTO-ROLE LOGIN)
   const handleGatewayLogin = (e) => {
     e.preventDefault();
     setLoginError('');
@@ -405,31 +406,36 @@ export default function SecComPortal({ onEmergencyPurge }) {
     const cleanUser = loginUsername.trim().toLowerCase();
     const cleanPass = loginPassword.trim();
 
-    if (loginTab === 'admin') {
-      if ((cleanUser === 'admin' && cleanPass === 'admin') || (cleanUser === 'admin' && cleanPass === 'admin')) {
-        setAuthRole('admin');
-        setActiveUser({ username: 'admin', role: 'Admin' });
-        setRoomSenderName('Admin-Command');
-        setActiveTab('admin'); // Show Admin Portal
-      } else {
-        setLoginError('Invalid Admin credentials! (Use admin / admin)');
-      }
-    } else {
-      // User Login Validation against usersList or user/user fallback
-      const foundUser = usersList.find(
-        (u) => u.username.toLowerCase() === cleanUser && u.passkey === cleanPass
-      );
+    // Check if Admin Credentials
+    if (cleanUser === 'admin' && cleanPass === 'admin') {
+      setAuthRole('admin');
+      setActiveUser({ username: 'admin', role: 'Admin' });
+      setRoomSenderName('Admin-Command');
+      setActiveTab('admin'); // Automatically open Admin Portal
+      return;
+    }
 
-      if (foundUser || (cleanUser === 'user' && cleanPass === 'user')) {
-        const loggedUser = foundUser || { username: 'user', role: 'User' };
-        setAuthRole(loggedUser.role === 'Admin' ? 'admin' : 'user');
+    // Check against usersList or default user credentials
+    const foundUser = usersList.find(
+      (u) => u.username.toLowerCase() === cleanUser && u.passkey === cleanPass
+    );
+
+    if (foundUser || (cleanUser === 'user' && cleanPass === 'user')) {
+      const loggedUser = foundUser || { username: 'user', role: 'User' };
+      if (loggedUser.role === 'Admin' || loggedUser.username.toLowerCase() === 'admin') {
+        setAuthRole('admin');
+        setActiveUser({ username: loggedUser.username, role: 'Admin' });
+        setRoomSenderName('Admin-Command');
+        setActiveTab('admin');
+      } else {
+        setAuthRole('user');
         setActiveUser(loggedUser);
         setRoomSenderName(loggedUser.username);
         setSelectedChatUser(loggedUser.username);
-        setActiveTab('chat'); // Show User Chat
-      } else {
-        setLoginError('Invalid User Credentials! (Use user / user)');
+        setActiveTab('chat');
       }
+    } else {
+      setLoginError('Invalid Username or Passkey credentials!');
     }
   };
 
@@ -483,13 +489,23 @@ export default function SecComPortal({ onEmergencyPurge }) {
     setEditingUserId(user.id);
     setEditUsername(user.username);
     setEditPasskey(user.passkey);
+    setEditRole(user.role || 'User');
   };
 
   const handleSaveEditUser = async (userId) => {
     if (isSupabaseConfigured && supabase) {
-      await supabase.from('vault_users').update({ username: editUsername, passkey: editPasskey }).eq('id', userId);
+      await supabase
+        .from('vault_users')
+        .update({ username: editUsername, passkey: editPasskey, role: editRole })
+        .eq('id', userId);
     }
-    setUsersList(prev => prev.map(u => u.id === userId ? { ...u, username: editUsername, passkey: editPasskey } : u));
+    setUsersList((prev) =>
+      prev.map((u) =>
+        u.id === userId
+          ? { ...u, username: editUsername, passkey: editPasskey, role: editRole }
+          : u
+      )
+    );
     setEditingUserId(null);
   };
 
@@ -890,7 +906,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
     setSupabaseCredentials(inputDbUrl, inputDbKey);
   };
 
-  // IF UNAUTHENTICATED: SHOW GATEWAY LOGIN MODAL WITH USER LOGIN & ADMIN LOGIN OPTIONS
+  // IF UNAUTHENTICATED: SHOW GATEWAY LOGIN MODAL WITH SINGLE UNIFIED LOGIN
   if (authRole === 'unauthenticated') {
     return (
       <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-xl flex items-center justify-center p-4">
@@ -904,40 +920,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
               <ShieldAlert className="w-8 h-8 animate-pulse" />
             </div>
             <h2 className="text-2xl font-bold tracking-wider text-slate-100">SecCom Vault Gateway</h2>
-            <p className="text-xs text-slate-400">Select login mode to authenticate identity</p>
-          </div>
-
-          {/* DUAL LOGIN TYPE SELECTOR TABS: USER LOGIN vs ADMIN LOGIN */}
-          <div className="grid grid-cols-2 gap-2 p-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs">
-            <button
-              onClick={() => {
-                setLoginTab('user');
-                setLoginError('');
-              }}
-              className={`py-2.5 rounded-lg flex items-center justify-center gap-2 font-bold transition-all ${
-                loginTab === 'user'
-                  ? 'bg-cyan-950 border border-cyan-500 text-cyan-400 shadow-[0_0_15px_rgba(0,243,255,0.2)]'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <User className="w-4 h-4" />
-              <span>User Login</span>
-            </button>
-
-            <button
-              onClick={() => {
-                setLoginTab('admin');
-                setLoginError('');
-              }}
-              className={`py-2.5 rounded-lg flex items-center justify-center gap-2 font-bold transition-all ${
-                loginTab === 'admin'
-                  ? 'bg-amber-950 border border-amber-500 text-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.2)]'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <ShieldCheck className="w-4 h-4" />
-              <span>Admin Login</span>
-            </button>
+            <p className="text-xs text-slate-400">Enter your credentials to authenticate</p>
           </div>
 
           {/* LOGIN ERROR ALERT */}
@@ -948,16 +931,16 @@ export default function SecComPortal({ onEmergencyPurge }) {
             </div>
           )}
 
-          {/* LOGIN FORM */}
+          {/* UNIFIED LOGIN FORM */}
           <form onSubmit={handleGatewayLogin} className="space-y-4">
             <div>
               <label className="text-xs text-slate-300 block mb-1">
-                {loginTab === 'admin' ? 'Admin Username' : 'Operative Username'}
+                Username
               </label>
               <input
                 type="text"
                 required
-                placeholder={loginTab === 'admin' ? 'admin' : 'user'}
+                placeholder="Enter username..."
                 value={loginUsername}
                 onChange={(e) => setLoginUsername(e.target.value)}
                 className="w-full p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-100 focus:border-cyan-500 focus:outline-none"
@@ -966,35 +949,21 @@ export default function SecComPortal({ onEmergencyPurge }) {
 
             <div>
               <label className="text-xs text-slate-300 block mb-1">
-                {loginTab === 'admin' ? 'Admin Passkey' : 'User Passkey'}
+                Passkey / Password
               </label>
               <input
                 type="password"
                 required
-                placeholder={loginTab === 'admin' ? 'admin' : 'user'}
+                placeholder="Enter passkey..."
                 value={loginPassword}
                 onChange={(e) => setLoginPassword(e.target.value)}
                 className="w-full p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-100 focus:border-cyan-500 focus:outline-none"
               />
             </div>
 
-            {/* Quick Helper Credentials Info */}
-            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-[10px] text-slate-400 space-y-1">
-              <p className="font-bold text-slate-300">Default Test Credentials:</p>
-              {loginTab === 'admin' ? (
-                <p>• Admin Access: <strong className="text-amber-400">admin / admin</strong></p>
-              ) : (
-                <p>• Operative Access: <strong className="text-cyan-400">user / user</strong></p>
-              )}
-            </div>
-
             <button
               type="submit"
-              className={`w-full py-3.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 ${
-                loginTab === 'admin'
-                  ? 'bg-amber-600 hover:bg-amber-500 text-slate-950 shadow-[0_0_20px_rgba(245,158,11,0.4)]'
-                  : 'bg-cyan-600 hover:bg-cyan-500 text-slate-950 shadow-[0_0_20px_rgba(0,243,255,0.4)]'
-              }`}
+              className="w-full py-3.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 bg-cyan-600 hover:bg-cyan-500 text-slate-950 shadow-[0_0_20px_rgba(0,243,255,0.4)] cursor-pointer"
             >
               <Lock className="w-4 h-4" />
               <span>Authenticate & Enter Vault</span>
@@ -1673,16 +1642,74 @@ export default function SecComPortal({ onEmergencyPurge }) {
                     <tbody className="divide-y divide-slate-800/60">
                       {usersList.map((user) => (
                         <tr key={user.id} className="hover:bg-slate-950/50">
-                          <td className="py-3 px-3 font-semibold text-slate-100">{user.username}</td>
-                          <td className="py-3 px-3 text-slate-400">{user.passkey}</td>
-                          <td className="py-3 px-3">{user.role}</td>
-                          <td className="py-3 px-3 text-right space-x-2">
-                            {user.username !== 'admin' && (
-                              <button onClick={() => handleDeleteUser(user.id)} className="text-rose-400 hover:text-white">
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            )}
-                          </td>
+                          {editingUserId === user.id ? (
+                            <>
+                              <td className="py-2 px-2">
+                                <input
+                                  type="text"
+                                  value={editUsername}
+                                  onChange={(e) => setEditUsername(e.target.value)}
+                                  className="w-full p-1.5 rounded bg-slate-950 border border-cyan-500 text-xs text-slate-100 font-mono"
+                                />
+                              </td>
+                              <td className="py-2 px-2">
+                                <input
+                                  type="text"
+                                  value={editPasskey}
+                                  onChange={(e) => setEditPasskey(e.target.value)}
+                                  className="w-full p-1.5 rounded bg-slate-950 border border-cyan-500 text-xs text-slate-100 font-mono"
+                                />
+                              </td>
+                              <td className="py-2 px-2">
+                                <select
+                                  value={editRole}
+                                  onChange={(e) => setEditRole(e.target.value)}
+                                  className="p-1.5 rounded bg-slate-950 border border-cyan-500 text-xs text-slate-100 font-mono"
+                                >
+                                  <option value="User">User</option>
+                                  <option value="Admin">Admin</option>
+                                </select>
+                              </td>
+                              <td className="py-2 px-2 text-right space-x-1">
+                                <button
+                                  onClick={() => handleSaveEditUser(user.id)}
+                                  className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold rounded text-[11px]"
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  onClick={() => setEditingUserId(null)}
+                                  className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px]"
+                                >
+                                  Cancel
+                                </button>
+                              </td>
+                            </>
+                          ) : (
+                            <>
+                              <td className="py-3 px-3 font-semibold text-slate-100">{user.username}</td>
+                              <td className="py-3 px-3 text-slate-400">{user.passkey}</td>
+                              <td className="py-3 px-3">
+                                <span className={`px-2 py-0.5 rounded text-[10px] ${user.role === 'Admin' ? 'bg-amber-950 text-amber-400 border border-amber-500/40' : 'bg-cyan-950 text-cyan-400 border border-cyan-500/40'}`}>
+                                  {user.role}
+                                </span>
+                              </td>
+                              <td className="py-3 px-3 text-right space-x-2">
+                                <button
+                                  onClick={() => handleStartEditUser(user)}
+                                  className="text-cyan-400 hover:text-white font-mono text-[11px] underline"
+                                  title="Edit User Details"
+                                >
+                                  Edit Details
+                                </button>
+                                {user.username !== 'admin' && (
+                                  <button onClick={() => handleDeleteUser(user.id)} className="text-rose-400 hover:text-white" title="Delete User">
+                                    <Trash2 className="w-4 h-4 inline" />
+                                  </button>
+                                )}
+                              </td>
+                            </>
+                          )}
                         </tr>
                       ))}
                     </tbody>
