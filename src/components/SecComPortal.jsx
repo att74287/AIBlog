@@ -53,6 +53,19 @@ import {
   FileSearch
 } from 'lucide-react';
 
+const formatTimestamp = (dateInput = new Date()) => {
+  const d = new Date(dateInput);
+  if (isNaN(d.getTime())) return new Date().toLocaleString();
+  return d.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  });
+};
+
 export default function SecComPortal({ onEmergencyPurge }) {
   // AUTHENTICATION & ROLE STATE: 'unauthenticated' | 'user' | 'admin'
   const [authRole, setAuthRole] = useState('unauthenticated');
@@ -95,13 +108,13 @@ export default function SecComPortal({ onEmergencyPurge }) {
   const [selectedRoom, setSelectedRoom] = useState('#general-vault');
   const [roomMessages, setRoomMessages] = useState({
     '#general-vault': [
-      { id: 'msg-101', sender: 'System-Node', cipher: 'e30.eyJ2IjoxLCJhbGdvIjoiQUVTLTI1Ni1HQ00ifQ==', text: 'Channel established. Zero-knowledge active.', time: '22:40:02' }
+      { id: 'msg-101', sender: 'System-Node', cipher: 'e30.eyJ2IjoxLCJhbGdvIjoiQUVTLTI1Ni1HQ00ifQ==', text: 'Channel established. Zero-knowledge active.', time: formatTimestamp('2026-07-28T20:00:00') }
     ],
     '#alpha-squad': [
-      { id: 'msg-201', sender: 'user', cipher: 'a12.eyJ2IjoxLCJhbGdvIjoiQUVTLTI1Ni1HQ00ifQ==', text: 'Alpha squad standing by for stego transmission.', time: '22:30:00' }
+      { id: 'msg-201', sender: 'user', cipher: 'a12.eyJ2IjoxLCJhbGdvIjoiQUVTLTI1Ni1HQ00ifQ==', text: 'Alpha squad standing by for stego transmission.', time: formatTimestamp('2026-07-28T20:15:00') }
     ],
     '#cyber-intelligence': [
-      { id: 'msg-301', sender: 'System-Bot', cipher: 'b99.eyJ2IjoxLCJhbGdvIjoiQUVTLTI1Ni1HQ00ifQ==', text: 'Anti-fingerprinting shield active on all relays.', time: '22:00:10' }
+      { id: 'msg-301', sender: 'System-Bot', cipher: 'b99.eyJ2IjoxLCJhbGdvIjoiQUVTLTI1Ni1HQ00ifQ==', text: 'Anti-fingerprinting shield active on all relays.', time: formatTimestamp('2026-07-28T20:20:00') }
     ]
   });
   const [roomInput, setRoomInput] = useState('');
@@ -113,11 +126,16 @@ export default function SecComPortal({ onEmergencyPurge }) {
   const [adminChatPerspective, setAdminChatPerspective] = useState('Admin');
   const [adminDirectMessages, setAdminDirectMessages] = useState({
     'user': [
-      { id: 'dir-1', sender: 'Admin', cipher: 'adm-01.aes', text: 'SecCom Command established. State your clearance code.', time: '21:30:10' },
-      { id: 'dir-2', sender: 'user', cipher: 'usr-01.aes', text: 'Clearance verified: User-7-Delta. Ready for task.', time: '21:30:45' }
+      { id: 'dir-1', sender: 'Admin', cipher: 'adm-01.aes', text: 'SecCom Command established. State your clearance code.', time: formatTimestamp('2026-07-28T20:30:00') },
+      { id: 'dir-2', sender: 'user', cipher: 'usr-01.aes', text: 'Clearance verified: User-7-Delta. Ready for task.', time: formatTimestamp('2026-07-28T20:31:00') }
     ]
   });
   const [directMsgInput, setDirectMsgInput] = useState('');
+
+  // REALTIME ADMIN BROADCAST & BURN NOTE STATE
+  const [activeBroadcastNote, setActiveBroadcastNote] = useState(null);
+  const [broadcastInput, setBroadcastInput] = useState('');
+  const [broadcastStatus, setBroadcastStatus] = useState('');
 
   // DUAL REALTIME BROADCAST CHANNELS & LOCALSTORAGE EVENT SYNC
   const broadcastChannelRef = useRef(null);
@@ -152,7 +170,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
               sender: m.sender,
               cipher: m.cipher,
               text: m.text,
-              time: m.created_at ? new Date(m.created_at).toLocaleTimeString() : new Date().toLocaleTimeString(),
+              time: m.created_at ? formatTimestamp(m.created_at) : formatTimestamp(),
               autoBurn: m.auto_burn
             });
           });
@@ -172,7 +190,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
               sender: m.sender,
               cipher: m.cipher,
               text: m.text,
-              time: m.created_at ? new Date(m.created_at).toLocaleTimeString() : new Date().toLocaleTimeString()
+              time: m.created_at ? formatTimestamp(m.created_at) : formatTimestamp()
             });
           });
           setAdminDirectMessages(prev => ({ ...prev, ...grouped }));
@@ -192,7 +210,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
             sender: m.sender,
             cipher: m.cipher,
             text: m.text,
-            time: new Date(m.created_at).toLocaleTimeString(),
+            time: formatTimestamp(m.created_at),
             autoBurn: m.auto_burn
           };
           setRoomMessages(prev => ({
@@ -217,7 +235,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
             sender: m.sender,
             cipher: m.cipher,
             text: m.text,
-            time: new Date(m.created_at).toLocaleTimeString()
+            time: formatTimestamp(m.created_at)
           };
           setAdminDirectMessages(prev => ({
             ...prev,
@@ -282,6 +300,25 @@ export default function SecComPortal({ onEmergencyPurge }) {
         ...prev,
         [data.targetUser]: []
       }));
+    } else if (data.type === 'ADMIN_BROADCAST') {
+      setActiveBroadcastNote(data.broadcast);
+      setRoomMessages((prev) => {
+        const genMsgs = prev['#general-vault'] || [];
+        if (genMsgs.some((m) => m.id === data.broadcast.id)) return prev;
+        return {
+          ...prev,
+          '#general-vault': [
+            ...genMsgs,
+            {
+              id: data.broadcast.id,
+              sender: '📢 ADMIN BROADCAST',
+              cipher: 'SECCOM-BROADCAST.ALL',
+              text: data.broadcast.text,
+              time: data.broadcast.time
+            }
+          ]
+        };
+      });
     }
   };
 
@@ -528,7 +565,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
       sender: roomSenderName || activeUser?.username || 'Operative-You',
       cipher: cipherPayload,
       text: currentInput,
-      time: new Date().toLocaleTimeString(),
+      time: formatTimestamp(),
       autoBurn: autoBurnSeconds !== 'none' ? parseInt(autoBurnSeconds, 10) : null
     };
 
@@ -616,7 +653,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
       sender: authRole === 'admin' ? (adminChatPerspective === 'Admin' ? 'Admin' : target) : activeUser?.username || 'User',
       cipher: cipherPayload,
       text: currentInput,
-      time: new Date().toLocaleTimeString()
+      time: formatTimestamp()
     };
 
     if (isSupabaseConfigured && supabase) {
@@ -638,6 +675,56 @@ export default function SecComPortal({ onEmergencyPurge }) {
         message: msg
       });
     }
+  };
+
+  // ADMIN BROADCAST & BURN NOTE TRANSMISSION
+  const handleSendAdminBroadcast = async (e) => {
+    if (e) e.preventDefault();
+    if (!broadcastInput.trim()) return;
+
+    const noteId = 'bcast-' + Date.now();
+    const formattedTime = formatTimestamp();
+    const broadcastObj = {
+      id: noteId,
+      sender: 'Admin-Command',
+      text: broadcastInput.trim(),
+      time: formattedTime
+    };
+
+    setActiveBroadcastNote(broadcastObj);
+
+    // Also post to #general-vault room chat automatically
+    const broadcastMsg = {
+      id: noteId,
+      sender: '📢 ADMIN BROADCAST',
+      cipher: 'SECCOM-BROADCAST.ALL',
+      text: broadcastInput.trim(),
+      time: formattedTime
+    };
+
+    setRoomMessages((prev) => ({
+      ...prev,
+      '#general-vault': [...(prev['#general-vault'] || []), broadcastMsg]
+    }));
+
+    if (isSupabaseConfigured && supabase) {
+      await supabase.from('room_messages').insert({
+        room: '#general-vault',
+        sender: '📢 ADMIN BROADCAST',
+        cipher: 'SECCOM-BROADCAST.ALL',
+        text: broadcastInput.trim(),
+        auto_burn: null
+      });
+    }
+
+    emitRealtimeSync({
+      type: 'ADMIN_BROADCAST',
+      broadcast: broadcastObj
+    });
+
+    setBroadcastInput('');
+    setBroadcastStatus('✅ Broadcast Note sent to all connected operatives in real-time!');
+    setTimeout(() => setBroadcastStatus(''), 5000);
   };
 
   // DESTROY INDIVIDUAL DIRECT MESSAGE
@@ -1095,6 +1182,37 @@ export default function SecComPortal({ onEmergencyPurge }) {
           })}
         </div>
       </header>
+
+      {/* REALTIME CRITICAL ADMIN BROADCAST BANNER (VISIBLE TO ALL OPERATIVES WITH BURN-ON-READ BUTTON) */}
+      {activeBroadcastNote && (
+        <div className="bg-amber-950/95 border-b border-amber-500/80 p-3.5 px-4 sm:px-6 text-amber-200 font-mono text-xs shadow-2xl relative animate-in slide-in-from-top duration-300 z-30">
+          <div className="max-w-7xl mx-auto flex items-center justify-between gap-4 flex-wrap">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-xl bg-amber-900 border border-amber-400 text-amber-300 shrink-0">
+                <Flame className="w-5 h-5 text-amber-400 animate-bounce" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-bold text-amber-400 uppercase tracking-wider text-[11px] bg-amber-900/60 px-2 py-0.5 rounded border border-amber-500/40">
+                    📢 CRITICAL ADMIN BROADCAST NOTE
+                  </span>
+                  <span className="text-[10px] text-slate-400 font-mono">({activeBroadcastNote.time})</span>
+                </div>
+                <p className="text-sm font-semibold text-slate-100 mt-1 font-sans">{activeBroadcastNote.text}</p>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setActiveBroadcastNote(null)}
+              className="px-4 py-2 rounded-xl bg-rose-950 hover:bg-rose-900 border border-rose-500/60 text-rose-200 font-bold text-xs flex items-center gap-2 shrink-0 transition-all shadow-[0_0_15px_rgba(244,63,94,0.3)] cursor-pointer"
+              title="Burn & Shred this Broadcast Note from screen"
+            >
+              <Flame className="w-4 h-4 text-rose-400" />
+              <span>Burn & Dismiss Note</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* MAIN CONTAINER CONTENT */}
       <main className="max-w-7xl mx-auto px-6 pt-8">
@@ -1720,48 +1838,74 @@ export default function SecComPortal({ onEmergencyPurge }) {
           </div>
         )}
 
-        {/* TAB: BURN NOTES */}
+        {/* TAB: ADMIN BROADCAST & BURN NOTES */}
         {activeTab === 'burn' && (
-          <div className="max-w-3xl mx-auto bg-slate-900/80 rounded-2xl p-6 border border-amber-500/40 shadow-2xl space-y-6">
+          <div className="max-w-3xl mx-auto bg-slate-900/80 rounded-2xl p-6 border border-amber-500/40 shadow-2xl space-y-6 animate-in fade-in">
             <div className="flex items-center gap-3 border-b border-slate-800 pb-4">
               <div className="p-3 rounded-xl bg-amber-950 border border-amber-500/40 text-amber-400">
-                <Flame className="w-6 h-6 animate-bounce" />
+                <Flame className="w-6 h-6 animate-bounce text-amber-400" />
               </div>
               <div>
-                <h2 className="font-mono font-bold text-xl text-slate-100">Burn-On-Read Secret Note</h2>
-                <p className="text-xs text-slate-400 font-mono">Self-destructs after viewing</p>
+                <h2 className="font-mono font-bold text-xl text-slate-100 flex items-center gap-2">
+                  Admin Broadcast & Burn-On-Read Notes
+                </h2>
+                <p className="text-xs text-slate-400 font-mono">
+                  Type a note below. When sent, all logged-in operatives receive a real-time burn-on-read alert with full Date & Time.
+                </p>
               </div>
             </div>
 
-            <div className="space-y-4">
-              <textarea
-                rows="4"
-                value={burnNote}
-                onChange={(e) => setBurnNote(e.target.value)}
-                placeholder="Type confidential note..."
-                className="w-full p-3 rounded-xl bg-slate-950 border border-slate-800 text-sm font-mono text-slate-100 focus:outline-none"
-              ></textarea>
+            {broadcastStatus && (
+              <div className="p-3 rounded-xl bg-emerald-950/80 border border-emerald-500/60 text-emerald-300 text-xs font-mono animate-in fade-in">
+                {broadcastStatus}
+              </div>
+            )}
+
+            <form onSubmit={handleSendAdminBroadcast} className="space-y-4">
+              <div>
+                <label className="text-xs font-mono text-slate-300 block mb-1">
+                  Broadcast Note Message (Date & Time auto-attached):
+                </label>
+                <textarea
+                  rows="4"
+                  required
+                  value={broadcastInput}
+                  onChange={(e) => setBroadcastInput(e.target.value)}
+                  placeholder="Type emergency operational broadcast or burn-on-read note..."
+                  className="w-full p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-sm font-mono text-slate-100 focus:border-amber-500 focus:outline-none"
+                ></textarea>
+              </div>
 
               <button
-                onClick={handleCreateBurnNote}
-                className="w-full py-3 rounded-xl bg-amber-600 hover:bg-amber-500 text-slate-950 font-mono font-bold text-xs uppercase"
+                type="submit"
+                className="w-full py-3.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-slate-950 font-mono font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(245,158,11,0.3)] cursor-pointer"
               >
-                Create Burn Note
+                <Flame className="w-4 h-4 text-slate-950" />
+                <span>📢 Broadcast Note to All Operatives (Burn-On-Read)</span>
               </button>
-            </div>
+            </form>
 
-            {generatedBurnLink && (
-              <div className="p-4 rounded-xl bg-slate-950 border border-amber-500/50 space-y-3">
-                <p className="text-xs font-mono text-amber-400">Burn Link Created:</p>
-                <input type="text" readOnly value={generatedBurnLink} className="w-full p-2 bg-slate-900 text-xs font-mono text-amber-200 rounded" />
-                <button onClick={handleSimulateReadBurnNote} className="px-4 py-1.5 rounded bg-rose-950 text-rose-300 text-xs font-mono">
-                  {burnNoteRead ? '🔥 Shredded' : 'Read Note Once'}
-                </button>
-                {burnNoteRead && (
-                  <div className="p-3 bg-rose-950/80 rounded border border-rose-500 text-rose-200 text-xs font-mono">
-                    <strong>Revealed & Burned:</strong> {burnNoteContent}
-                  </div>
-                )}
+            {/* PREVIEW OF ACTIVE BROADCAST */}
+            {activeBroadcastNote && (
+              <div className="p-4 rounded-xl bg-slate-950 border border-amber-500/50 space-y-2">
+                <div className="flex items-center justify-between text-xs font-mono text-amber-400">
+                  <span className="font-bold flex items-center gap-1.5">
+                    <Flame className="w-4 h-4 text-amber-400" /> Active System Broadcast
+                  </span>
+                  <span className="text-[10px] text-slate-400">{activeBroadcastNote.time}</span>
+                </div>
+                <p className="text-sm font-sans text-slate-100 bg-slate-900 p-3 rounded-lg border border-slate-800">
+                  {activeBroadcastNote.text}
+                </p>
+                <div className="pt-1 flex justify-end">
+                  <button
+                    onClick={() => setActiveBroadcastNote(null)}
+                    className="px-3 py-1.5 rounded-lg bg-rose-950 hover:bg-rose-900 border border-rose-500/50 text-rose-300 text-xs font-mono flex items-center gap-1.5"
+                  >
+                    <Flame className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Burn & Dismiss Note</span>
+                  </button>
+                </div>
               </div>
             )}
           </div>
