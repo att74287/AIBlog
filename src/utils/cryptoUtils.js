@@ -244,7 +244,7 @@ export function decodeZeroWidth(stegoText) {
 }
 
 /**
- * Image LSB Canvas Steganography (Lossless PNG Stego with Magic Verification)
+ * Image LSB Canvas Steganography (Lossless PNG Stego with Magic Verification & Multi-Device Alpha Protection)
  */
 const STEGO_MAGIC = [0x53, 0x45, 0x43, 0x43, 0x4f, 0x4d]; // "SECCOM"
 
@@ -253,6 +253,11 @@ export function hideTextInCanvas(canvas, secretText) {
   ctx.imageSmoothingEnabled = false;
   const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = imgData.data;
+
+  // CRITICAL: Force Alpha = 255 (100% opaque) for all pixels to prevent browser premultiplication & color quantization on mobile devices
+  for (let p = 0; p < data.length; p += 4) {
+    data[p + 3] = 255;
+  }
 
   const encoder = new TextEncoder();
   const secretBytes = encoder.encode(secretText);
@@ -269,7 +274,7 @@ export function hideTextInCanvas(canvas, secretText) {
 
   const totalBits = fullBytes.length * 8;
   if (totalBits > (data.length / 4)) {
-    throw new Error('Image dimensions too small to store secret payload.');
+    throw new Error('Image dimensions too small to store secret payload. Please use a larger cover image.');
   }
 
   let bitIdx = 0;
@@ -278,6 +283,8 @@ export function hideTextInCanvas(canvas, secretText) {
     const bitPos = 7 - (bitIdx % 8);
     const bit = (fullBytes[byteIndex] >> bitPos) & 1;
 
+    // Embed bit into both Red (data[i]) and Blue (data[i + 2]) LSB channels for maximum cross-device resilience
+    data[i] = (data[i] & 0xfe) | bit;
     data[i + 2] = (data[i + 2] & 0xfe) | bit;
     bitIdx++;
   }
@@ -292,55 +299,66 @@ export function extractTextFromCanvas(canvas) {
   const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = imgData.data;
 
-  // 1. Extract first 48 bits (6 bytes magic header: "SECCOM")
-  let magicStr = '';
-  let bitIdx = 0;
-  for (let byteIdx = 0; byteIdx < 6; byteIdx++) {
-    let byteVal = 0;
-    for (let b = 0; b < 8; b++) {
-      const pixelIndex = bitIdx * 4;
-      const lsb = data[pixelIndex + 2] & 1;
-      byteVal = (byteVal << 1) | lsb;
-      bitIdx++;
+  // Attempt extraction across channel candidates: 0 (Red LSB) and 2 (Blue LSB)
+  const channelOffsets = [0, 2];
+
+  for (const channelOffset of channelOffsets) {
+    try {
+      // 1. Extract first 48 bits (6 bytes magic header: "SECCOM")
+      let magicStr = '';
+      let bitIdx = 0;
+      for (let byteIdx = 0; byteIdx < 6; byteIdx++) {
+        let byteVal = 0;
+        for (let b = 0; b < 8; b++) {
+          const pixelIndex = bitIdx * 4;
+          const lsb = data[pixelIndex + channelOffset] & 1;
+          byteVal = (byteVal << 1) | lsb;
+          bitIdx++;
+        }
+        magicStr += String.fromCharCode(byteVal);
+      }
+
+      if (magicStr !== 'SECCOM') {
+        continue; // Try next channel offset
+      }
+
+      // 2. Extract next 32 bits (4 bytes payload length)
+      let payloadLen = 0;
+      for (let i = 0; i < 4; i++) {
+        let byteVal = 0;
+        for (let b = 0; b < 8; b++) {
+          const pixelIndex = bitIdx * 4;
+          const lsb = data[pixelIndex + channelOffset] & 1;
+          byteVal = (byteVal << 1) | lsb;
+          bitIdx++;
+        }
+        payloadLen = (payloadLen << 8) | byteVal;
+      }
+
+      if (payloadLen <= 0 || payloadLen > ((data.length - 80) / 32)) {
+        continue;
+      }
+
+      // 3. Extract payload bytes
+      const payloadBytes = new Uint8Array(payloadLen);
+      for (let byteIdx = 0; byteIdx < payloadLen; byteIdx++) {
+        let byteVal = 0;
+        for (let b = 0; b < 8; b++) {
+          const pixelIndex = bitIdx * 4;
+          const lsb = data[pixelIndex + channelOffset] & 1;
+          byteVal = (byteVal << 1) | lsb;
+          bitIdx++;
+        }
+        payloadBytes[byteIdx] = byteVal;
+      }
+
+      return new TextDecoder().decode(payloadBytes);
+    } catch {
+      // Continue to next channel offset
     }
-    magicStr += String.fromCharCode(byteVal);
   }
 
-  if (magicStr !== 'SECCOM') {
-    throw new Error('No valid steganographic payload detected. If you shared this photo via WhatsApp/Telegram/Email, please send it as a FILE / DOCUMENT (uncompressed PNG). Social apps compress photos into lossy JPEG format which destroys hidden pixel data!');
-  }
-
-  // 2. Extract next 32 bits (4 bytes payload length)
-  let payloadLen = 0;
-  for (let i = 0; i < 4; i++) {
-    let byteVal = 0;
-    for (let b = 0; b < 8; b++) {
-      const pixelIndex = bitIdx * 4;
-      const lsb = data[pixelIndex + 2] & 1;
-      byteVal = (byteVal << 1) | lsb;
-      bitIdx++;
-    }
-    payloadLen = (payloadLen << 8) | byteVal;
-  }
-
-  if (payloadLen <= 0 || payloadLen > ((data.length - 80) / 32)) {
-    throw new Error('Corrupted steganographic header detected. Ensure original PNG image was transferred without lossy compression.');
-  }
-
-  // 3. Extract payload bytes
-  const payloadBytes = new Uint8Array(payloadLen);
-  for (let byteIdx = 0; byteIdx < payloadLen; byteIdx++) {
-    let byteVal = 0;
-    for (let b = 0; b < 8; b++) {
-      const pixelIndex = bitIdx * 4;
-      const lsb = data[pixelIndex + 2] & 1;
-      byteVal = (byteVal << 1) | lsb;
-      bitIdx++;
-    }
-    payloadBytes[byteIdx] = byteVal;
-  }
-
-  return new TextDecoder().decode(payloadBytes);
+  throw new Error('No valid steganographic payload detected. Note: When sharing stego photos between devices, ensure the image is shared as a raw UNCOMPRESSED DOCUMENT / PNG file (messaging apps like WhatsApp compress standard photos into lossy JPEGs which destroy hidden LSB pixels).');
 }
 
 /**

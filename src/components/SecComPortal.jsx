@@ -56,8 +56,13 @@ import {
   Activity,
   MapPin,
   Laptop,
-  Smartphone,
-  ShieldOff
+  ShieldOff,
+  Network,
+  Workflow,
+  GitFork,
+  ArrowRight,
+  Share2,
+  Layers
 } from 'lucide-react';
 
 const formatTimestamp = (dateInput = new Date()) => {
@@ -307,6 +312,26 @@ export default function SecComPortal({ onEmergencyPurge }) {
         ...prev,
         [data.room]: []
       }));
+    } else if (data.type === 'DIRECT_MESSAGE') {
+      setAdminDirectMessages((prev) => {
+        const list = prev[data.targetUser] || [];
+        if (list.some((m) => m.id === data.message.id)) return prev;
+
+        let remaining = list;
+        if (data.isGhostMode || isGhostMode) {
+          remaining = list.filter((m) => m.status !== 'seen');
+        }
+        return {
+          ...prev,
+          [data.targetUser]: [...remaining, data.message]
+        };
+      });
+      if (activeTab === 'chat') {
+        const currentTarget = authRole === 'admin' ? selectedChatUser : activeUser?.username;
+        if (currentTarget === data.targetUser) {
+          setTimeout(() => markDirectMessagesAsSeen(data.targetUser), 300);
+        }
+      }
     } else if (data.type === 'DESTROY_DIRECT_MESSAGE') {
       setAdminDirectMessages((prev) => ({
         ...prev,
@@ -321,7 +346,16 @@ export default function SecComPortal({ onEmergencyPurge }) {
       setAdminDirectMessages((prev) => {
         const list = prev[data.targetUser] || [];
         const updated = list.map((m) => ({ ...m, status: 'seen' }));
-        return { ...prev, [data.targetUser]: updated };
+        let finalMessages = updated;
+        if (data.isGhostMode || isGhostMode) {
+          const hasUnseen = updated.some(m => m.status !== 'seen');
+          if (hasUnseen) {
+            finalMessages = updated.filter(m => m.status !== 'seen');
+          } else if (updated.length > 1) {
+            finalMessages = [updated[updated.length - 1]];
+          }
+        }
+        return { ...prev, [data.targetUser]: finalMessages };
       });
     } else if (data.type === 'ADMIN_BROADCAST') {
       setActiveBroadcastNote(data.broadcast);
@@ -713,6 +747,25 @@ export default function SecComPortal({ onEmergencyPurge }) {
       isGhost: isGhostMode
     };
 
+    setAdminDirectMessages((prev) => {
+      const list = prev[target] || [];
+      let remaining = list;
+      if (isGhostMode) {
+        remaining = list.filter((m) => m.status !== 'seen');
+      }
+      return {
+        ...prev,
+        [target]: [...remaining, msg]
+      };
+    });
+
+    emitRealtimeSync({
+      type: 'DIRECT_MESSAGE',
+      targetUser: target,
+      message: msg,
+      isGhostMode: isGhostMode
+    });
+
     if (isSupabaseConfigured && supabase) {
       await supabase.from('direct_messages').insert({
         target_user: target,
@@ -720,44 +773,52 @@ export default function SecComPortal({ onEmergencyPurge }) {
         cipher: msg.cipher,
         text: msg.text
       });
-    } else {
-      setAdminDirectMessages((prev) => ({
-        ...prev,
-        [target]: [...(prev[target] || []), msg]
-      }));
-
-      emitRealtimeSync({
-        type: 'DIRECT_MESSAGE',
-        targetUser: target,
-        message: msg
-      });
-    }
-
-    if (isGhostMode) {
-      setTimeout(() => {
-        handleDestroyDirectMessage(target, msgId);
-      }, 6000);
     }
   };
 
-  // MARK DIRECT MESSAGES AS SEEN (DOUBLE CYAN TICKS)
+  // MARK DIRECT MESSAGES AS SEEN (DOUBLE CYAN TICKS & GHOST MODE PURGE)
   const markDirectMessagesAsSeen = (targetUser) => {
+    if (!targetUser) return;
     setAdminDirectMessages((prev) => {
       const list = prev[targetUser] || [];
       let updatedAny = false;
+      const currentUser = authRole === 'admin' ? 'Admin' : activeUser?.username;
+
       const updated = list.map((m) => {
-        if (m.sender !== (authRole === 'admin' ? 'Admin' : activeUser?.username) && m.status !== 'seen') {
+        if (m.sender !== currentUser && m.status !== 'seen') {
           updatedAny = true;
           return { ...m, status: 'seen' };
         }
         return m;
       });
-      if (updatedAny) {
-        emitRealtimeSync({ type: 'MARK_MESSAGES_SEEN', targetUser: targetUser });
+
+      let finalMessages = updated;
+      if (isGhostMode) {
+        const hasUnseen = updated.some(m => m.status !== 'seen');
+        if (hasUnseen) {
+          finalMessages = updated.filter(m => m.status !== 'seen');
+        } else if (updated.length > 1) {
+          finalMessages = [updated[updated.length - 1]];
+        }
       }
-      return { ...prev, [targetUser]: updated };
+
+      if (updatedAny) {
+        emitRealtimeSync({ type: 'MARK_MESSAGES_SEEN', targetUser: targetUser, isGhostMode });
+      }
+
+      return { ...prev, [targetUser]: finalMessages };
     });
   };
+
+  // Auto-mark direct messages as SEEN when chat tab is active
+  useEffect(() => {
+    if (activeTab === 'chat') {
+      const targetUser = authRole === 'admin' ? selectedChatUser : activeUser?.username || 'user';
+      if (targetUser) {
+        markDirectMessagesAsSeen(targetUser);
+      }
+    }
+  }, [activeTab, selectedChatUser, activeUser]);
 
   // ADMIN BROADCAST & BURN NOTE TRANSMISSION
   const handleSendAdminBroadcast = async (e) => {
@@ -1920,6 +1981,18 @@ export default function SecComPortal({ onEmergencyPurge }) {
                   <Globe className="w-3.5 h-3.5 text-emerald-400" />
                   <span>IP History Log</span>
                 </button>
+
+                <button
+                  onClick={() => setAdminSubTab('tor')}
+                  className={`px-3.5 py-2 rounded-xl text-xs font-mono font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                    adminSubTab === 'tor'
+                      ? 'bg-purple-950 border border-purple-500 text-purple-300 shadow-md'
+                      : 'bg-slate-950 border border-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Network className="w-3.5 h-3.5 text-purple-400" />
+                  <span>Tor Router & Flowcharts</span>
+                </button>
               </div>
             </div>
 
@@ -2239,6 +2312,208 @@ export default function SecComPortal({ onEmergencyPurge }) {
                     </tbody>
                   </table>
                 </div>
+              </div>
+            )}
+
+            {/* SUB-TAB 5: TOR ROUTER & VISUAL PROCESS MAPPINGS (FLOWCHARTS) */}
+            {adminSubTab === 'tor' && (
+              <div className="space-y-6 animate-in fade-in font-mono">
+                
+                {/* TOR ONION ROUTER MULTI-HOP CIRCUIT FLOWCHART */}
+                <div className="bg-slate-900/80 rounded-2xl p-6 border border-purple-500/40 shadow-2xl space-y-6">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-4 flex-wrap gap-2">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2.5 rounded-xl bg-purple-950 border border-purple-500/50 text-purple-400">
+                        <Network className="w-5 h-5 animate-pulse" />
+                      </div>
+                      <div>
+                        <h3 className="font-bold text-base text-purple-300 flex items-center gap-2">
+                          Tor Onion Router Multi-Hop Circuit Mapping
+                        </h3>
+                        <p className="text-xs text-slate-400">Visual mapping of 3-layer encrypted packet transmission across Tor relay nodes</p>
+                      </div>
+                    </div>
+                    <span className="text-xs text-purple-300 bg-purple-950/80 px-3 py-1 rounded-lg border border-purple-500/50 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                      Circuit Status: ESTABLISHED (3 Hops Active)
+                    </span>
+                  </div>
+
+                  {/* Interactive Visual Circuit Flowchart Map */}
+                  <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-center py-4 relative">
+                    {/* Node 1: Client Origin */}
+                    <div className="bg-slate-950 p-4 rounded-xl border border-cyan-500/50 space-y-2 text-center shadow-lg relative group hover:border-cyan-400 transition-all">
+                      <div className="w-10 h-10 mx-auto rounded-full bg-cyan-950 text-cyan-400 border border-cyan-500 flex items-center justify-center font-bold">
+                        <Laptop className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-cyan-400 font-bold uppercase block">Origin Client</span>
+                        <span className="text-xs font-bold text-slate-100 block">Client App / User</span>
+                        <span className="text-[9px] text-slate-400 block mt-0.5">IP Spoofed / AES Key 1</span>
+                      </div>
+                    </div>
+
+                    {/* Flow Arrow 1 */}
+                    <div className="hidden md:flex flex-col items-center justify-center text-purple-400">
+                      <ArrowRight className="w-6 h-6 animate-pulse" />
+                      <span className="text-[9px] text-purple-300">Layer 3 Enc.</span>
+                    </div>
+
+                    {/* Node 2: Entry Guard Node */}
+                    <div className="bg-slate-950 p-4 rounded-xl border border-purple-500/50 space-y-2 text-center shadow-lg relative group hover:border-purple-400 transition-all">
+                      <div className="w-10 h-10 mx-auto rounded-full bg-purple-950 text-purple-400 border border-purple-500 flex items-center justify-center font-bold">
+                        <ShieldCheck className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-purple-400 font-bold uppercase block">Entry Guard</span>
+                        <span className="text-xs font-bold text-slate-100 block">Relay Node #1</span>
+                        <span className="text-[9px] text-slate-400 block mt-0.5">IP: 185.220.101.4</span>
+                      </div>
+                    </div>
+
+                    {/* Flow Arrow 2 */}
+                    <div className="hidden md:flex flex-col items-center justify-center text-purple-400">
+                      <ArrowRight className="w-6 h-6 animate-pulse" />
+                      <span className="text-[9px] text-purple-300">Layer 2 Enc.</span>
+                    </div>
+
+                    {/* Node 3: Middle Relay Node */}
+                    <div className="bg-slate-950 p-4 rounded-xl border border-amber-500/50 space-y-2 text-center shadow-lg relative group hover:border-amber-400 transition-all">
+                      <div className="w-10 h-10 mx-auto rounded-full bg-amber-950 text-amber-400 border border-amber-500 flex items-center justify-center font-bold">
+                        <GitFork className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-amber-400 font-bold uppercase block">Middle Relay</span>
+                        <span className="text-xs font-bold text-slate-100 block">Relay Node #2</span>
+                        <span className="text-[9px] text-slate-400 block mt-0.5">IP: 198.96.155.3</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
+                    {/* Node 4: Exit Node */}
+                    <div className="bg-slate-950 p-4 rounded-xl border border-rose-500/50 space-y-2 text-center shadow-lg">
+                      <div className="w-10 h-10 mx-auto rounded-full bg-rose-950 text-rose-400 border border-rose-500 flex items-center justify-center font-bold">
+                        <Globe className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-rose-400 font-bold uppercase block">Exit Gateway</span>
+                        <span className="text-xs font-bold text-slate-100 block">Tor Exit Node</span>
+                        <span className="text-[9px] text-slate-400 block mt-0.5">IP: 162.247.74.200</span>
+                      </div>
+                    </div>
+
+                    {/* Arrow to Server */}
+                    <div className="hidden md:flex items-center justify-center text-purple-400">
+                      <ArrowRight className="w-8 h-8 animate-pulse mx-auto" />
+                    </div>
+
+                    {/* Node 5: SecCom Vault Server */}
+                    <div className="bg-slate-950 p-4 rounded-xl border border-emerald-500/50 space-y-2 text-center shadow-lg">
+                      <div className="w-10 h-10 mx-auto rounded-full bg-emerald-950 text-emerald-400 border border-emerald-500 flex items-center justify-center font-bold">
+                        <Server className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-emerald-400 font-bold uppercase block">Destination</span>
+                        <span className="text-xs font-bold text-slate-100 block">AIBlog SecCom Vault</span>
+                        <span className="text-[9px] text-slate-400 block mt-0.5">.onion Hidden Service</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* FEATURE PROCESS FLOWCHARTS GRID */}
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  
+                  {/* FLOWCHART 1: GHOST MODE PROTOCOL */}
+                  <div className="bg-slate-900/80 rounded-2xl p-5 border border-purple-500/30 space-y-4 shadow-xl">
+                    <h4 className="font-bold text-sm text-purple-300 flex items-center gap-2 border-b border-slate-800 pb-2">
+                      <Ghost className="w-4 h-4 text-purple-400" /> Ghost Mode Auto-Destruct Flowchart
+                    </h4>
+
+                    <div className="space-y-2.5 text-xs">
+                      <div className="p-2.5 rounded-lg bg-slate-950 border border-purple-500/40 flex items-center gap-2">
+                        <span className="w-5 h-5 rounded-full bg-purple-900 text-purple-200 text-[10px] font-bold flex items-center justify-center shrink-0">1</span>
+                        <span>Sender types msg with <strong>Ghost Mode: ON</strong></span>
+                      </div>
+                      <div className="text-center text-purple-400 font-bold">↓</div>
+                      <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 flex items-center gap-2">
+                        <span className="w-5 h-5 rounded-full bg-slate-800 text-slate-300 text-[10px] font-bold flex items-center justify-center shrink-0">2</span>
+                        <span>Delivered to recipient device <strong className="text-slate-400">(✓✓ Double Gray)</strong></span>
+                      </div>
+                      <div className="text-center text-purple-400 font-bold">↓</div>
+                      <div className="p-2.5 rounded-lg bg-slate-950 border border-cyan-500/40 flex items-center gap-2">
+                        <span className="w-5 h-5 rounded-full bg-cyan-950 text-cyan-300 text-[10px] font-bold flex items-center justify-center shrink-0">3</span>
+                        <span>Recipient views message <strong className="text-cyan-400">(✓✓ Double Blue)</strong></span>
+                      </div>
+                      <div className="text-center text-purple-400 font-bold">↓</div>
+                      <div className="p-2.5 rounded-lg bg-rose-950/60 border border-rose-500/50 flex items-center gap-2 text-rose-200 font-bold animate-pulse">
+                        <span className="w-5 h-5 rounded-full bg-rose-900 text-white text-[10px] font-bold flex items-center justify-center shrink-0">4</span>
+                        <span>Next Msg Event → Auto-Shred & Memory Purge</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* FLOWCHART 2: STEGANOGRAPHY LSB ENGINE */}
+                  <div className="bg-slate-900/80 rounded-2xl p-5 border border-cyan-500/30 space-y-4 shadow-xl">
+                    <h4 className="font-bold text-sm text-cyan-300 flex items-center gap-2 border-b border-slate-800 pb-2">
+                      <Eye className="w-4 h-4 text-cyan-400" /> Steganography Studio LSB Flowchart
+                    </h4>
+
+                    <div className="space-y-2.5 text-xs">
+                      <div className="p-2.5 rounded-lg bg-slate-950 border border-cyan-500/40 flex items-center gap-2">
+                        <span className="w-5 h-5 rounded-full bg-cyan-950 text-cyan-300 text-[10px] font-bold flex items-center justify-center shrink-0">1</span>
+                        <span>Import Cover Photo + Passphrase payload</span>
+                      </div>
+                      <div className="text-center text-cyan-400 font-bold">↓</div>
+                      <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 flex items-center gap-2">
+                        <span className="w-5 h-5 rounded-full bg-slate-800 text-slate-300 text-[10px] font-bold flex items-center justify-center shrink-0">2</span>
+                        <span>AES-256 Encrypt & Append SECCOM Magic Header</span>
+                      </div>
+                      <div className="text-center text-cyan-400 font-bold">↓</div>
+                      <div className="p-2.5 rounded-lg bg-slate-950 border border-emerald-500/40 flex items-center gap-2">
+                        <span className="w-5 h-5 rounded-full bg-emerald-950 text-emerald-300 text-[10px] font-bold flex items-center justify-center shrink-0">3</span>
+                        <span>Force Alpha = 255 & Inject Red/Blue LSB</span>
+                      </div>
+                      <div className="text-center text-cyan-400 font-bold">↓</div>
+                      <div className="p-2.5 rounded-lg bg-slate-950 border border-amber-500/40 flex items-center gap-2">
+                        <span className="w-5 h-5 rounded-full bg-amber-950 text-amber-300 text-[10px] font-bold flex items-center justify-center shrink-0">4</span>
+                        <span>Download PNG & Extract Secret on Any Device</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* FLOWCHART 3: SECURITY AUDIT & RISK ALERTS */}
+                  <div className="bg-slate-900/80 rounded-2xl p-5 border border-amber-500/30 space-y-4 shadow-xl">
+                    <h4 className="font-bold text-sm text-amber-300 flex items-center gap-2 border-b border-slate-800 pb-2">
+                      <ShieldAlert className="w-4 h-4 text-amber-400" /> Security Audit & Risk Engine
+                    </h4>
+
+                    <div className="space-y-2.5 text-xs">
+                      <div className="p-2.5 rounded-lg bg-slate-950 border border-amber-500/40 flex items-center gap-2">
+                        <span className="w-5 h-5 rounded-full bg-amber-950 text-amber-300 text-[10px] font-bold flex items-center justify-center shrink-0">1</span>
+                        <span>User submits authentication credentials</span>
+                      </div>
+                      <div className="text-center text-amber-400 font-bold">↓</div>
+                      <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 flex items-center gap-2">
+                        <span className="w-5 h-5 rounded-full bg-slate-800 text-slate-300 text-[10px] font-bold flex items-center justify-center shrink-0">2</span>
+                        <span>Extract IP, Timestamp & Device User-Agent</span>
+                      </div>
+                      <div className="text-center text-amber-400 font-bold">↓</div>
+                      <div className="p-2.5 rounded-lg bg-slate-950 border border-rose-500/40 flex items-center gap-2">
+                        <span className="w-5 h-5 rounded-full bg-rose-950 text-rose-300 text-[10px] font-bold flex items-center justify-center shrink-0">3</span>
+                        <span>Evaluate Failure Threshold & Risk Score</span>
+                      </div>
+                      <div className="text-center text-amber-400 font-bold">↓</div>
+                      <div className="p-2.5 rounded-lg bg-slate-950 border border-emerald-500/40 flex items-center gap-2">
+                        <span className="w-5 h-5 rounded-full bg-emerald-950 text-emerald-300 text-[10px] font-bold flex items-center justify-center shrink-0">4</span>
+                        <span>Record to Login Audit & Push Admin Alert</span>
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+
               </div>
             )}
 
