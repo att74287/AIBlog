@@ -65,6 +65,8 @@ import {
   Layers
 } from 'lucide-react';
 
+const CLIENT_ID = 'client-' + Math.random().toString(36).substring(2, 9);
+
 const formatTimestamp = (dateInput = new Date()) => {
   const d = new Date(dateInput);
   if (isNaN(d.getTime())) return new Date().toLocaleString();
@@ -299,6 +301,8 @@ export default function SecComPortal({ onEmergencyPurge }) {
 
   // Synchronize state incoming from other tabs/clients instantly
   const handleIncomingMessagePayload = (data) => {
+    if (!data || data.clientId === CLIENT_ID) return;
+
     if (data.type === 'ROOM_MESSAGE') {
       setRoomMessages((prev) => {
         const roomMsgs = prev[data.room] || [];
@@ -411,11 +415,12 @@ export default function SecComPortal({ onEmergencyPurge }) {
   }, []);
 
   const emitRealtimeSync = (payload) => {
+    const fullPayload = { ...payload, clientId: CLIENT_ID, _nonce: Date.now() };
     if (broadcastChannelRef.current) {
-      broadcastChannelRef.current.postMessage(payload);
+      broadcastChannelRef.current.postMessage(fullPayload);
     }
     try {
-      localStorage.setItem('seccom_sync_event', JSON.stringify({ ...payload, _nonce: Date.now() }));
+      localStorage.setItem('seccom_sync_event', JSON.stringify(fullPayload));
     } catch {}
   };
 
