@@ -50,7 +50,14 @@ import {
   ShieldAlert,
   Sliders,
   Upload,
-  FileSearch
+  FileSearch,
+  CheckCheck,
+  Ghost,
+  Activity,
+  MapPin,
+  Laptop,
+  Smartphone,
+  ShieldOff
 } from 'lucide-react';
 
 const formatTimestamp = (dateInput = new Date()) => {
@@ -121,13 +128,23 @@ export default function SecComPortal({ onEmergencyPurge }) {
   const [roomSenderName, setRoomSenderName] = useState('user');
   const [autoBurnSeconds, setAutoBurnSeconds] = useState('none');
 
+  // GHOST MODE & ADMIN SECURITY AUDIT STATE
+  const [adminSubTab, setAdminSubTab] = useState('users'); // 'users' | 'history' | 'alerts' | 'ips'
+  const [isGhostMode, setIsGhostMode] = useState(false);
+  const [loginHistory, setLoginHistory] = useState([
+    { id: 'log-101', username: 'admin', ip: '192.168.1.101', status: 'SUCCESS', date: formatTimestamp('2026-07-28T20:00:00'), device: 'Chrome 124 / Windows 11', risk: 'LOW' },
+    { id: 'log-102', username: 'user', ip: '192.168.1.105', status: 'SUCCESS', date: formatTimestamp('2026-07-28T20:15:00'), device: 'Mobile Safari / iOS 17', risk: 'LOW' },
+    { id: 'log-103', username: 'root_hacker', ip: '185.220.101.5', status: 'FAILED', date: formatTimestamp('2026-07-28T20:45:00'), device: 'Tor Exit Node / Script Bot', risk: 'HIGH SUSPICIOUS' },
+    { id: 'log-104', username: 'admin_attack', ip: '45.33.32.156', status: 'FAILED', date: formatTimestamp('2026-07-28T21:05:00'), device: 'BruteForce Python Script', risk: 'HIGH SUSPICIOUS' }
+  ]);
+
   // REALTIME ADMIN-USER DIRECT CHAT STATE
   const [selectedChatUser, setSelectedChatUser] = useState('user');
   const [adminChatPerspective, setAdminChatPerspective] = useState('Admin');
   const [adminDirectMessages, setAdminDirectMessages] = useState({
     'user': [
-      { id: 'dir-1', sender: 'Admin', cipher: 'adm-01.aes', text: 'SecCom Command established. State your clearance code.', time: formatTimestamp('2026-07-28T20:30:00') },
-      { id: 'dir-2', sender: 'user', cipher: 'usr-01.aes', text: 'Clearance verified: User-7-Delta. Ready for task.', time: formatTimestamp('2026-07-28T20:31:00') }
+      { id: 'dir-1', sender: 'Admin', cipher: 'adm-01.aes', text: 'SecCom Command established. State your clearance code.', time: formatTimestamp('2026-07-28T20:30:00'), status: 'seen', isGhost: false },
+      { id: 'dir-2', sender: 'user', cipher: 'usr-01.aes', text: 'Clearance verified: User-7-Delta. Ready for task.', time: formatTimestamp('2026-07-28T20:31:00'), status: 'seen', isGhost: false }
     ]
   });
   const [directMsgInput, setDirectMsgInput] = useState('');
@@ -300,6 +317,12 @@ export default function SecComPortal({ onEmergencyPurge }) {
         ...prev,
         [data.targetUser]: []
       }));
+    } else if (data.type === 'MARK_MESSAGES_SEEN') {
+      setAdminDirectMessages((prev) => {
+        const list = prev[data.targetUser] || [];
+        const updated = list.map((m) => ({ ...m, status: 'seen' }));
+        return { ...prev, [data.targetUser]: updated };
+      });
     } else if (data.type === 'ADMIN_BROADCAST') {
       setActiveBroadcastNote(data.broadcast);
       setRoomMessages((prev) => {
@@ -435,6 +458,35 @@ export default function SecComPortal({ onEmergencyPurge }) {
     };
   }, [onEmergencyPurge]);
 
+  // RECORD LOGIN AUDIT EVENT TO HISTORY
+  const recordLoginAttempt = (username, status, riskLevel = 'LOW') => {
+    const clientIp = '192.168.1.' + Math.floor(Math.random() * 150 + 10);
+    const isMobile = /Mobi|Android|iPhone/i.test(navigator.userAgent);
+    const deviceStr = isMobile ? 'Mobile Safari / iOS 17' : 'Desktop Chrome / Windows 11';
+    
+    const newLog = {
+      id: 'log-' + Date.now(),
+      username: username || 'Unknown',
+      ip: clientIp,
+      status: status,
+      date: formatTimestamp(),
+      device: deviceStr,
+      risk: riskLevel
+    };
+
+    setLoginHistory(prev => [newLog, ...prev]);
+
+    if (isSupabaseConfigured && supabase) {
+      supabase.from('login_history').insert({
+        username: newLog.username,
+        ip: newLog.ip,
+        status: newLog.status,
+        device: newLog.device,
+        risk: newLog.risk
+      }).then(() => {}).catch(() => {});
+    }
+  };
+
   // HANDLE GATEWAY LOGIN VERIFICATION (SMART AUTO-ROLE LOGIN)
   const handleGatewayLogin = (e) => {
     e.preventDefault();
@@ -445,6 +497,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
 
     // Check if Admin Credentials
     if (cleanUser === 'admin' && cleanPass === 'admin') {
+      recordLoginAttempt('admin', 'SUCCESS', 'LOW');
       setAuthRole('admin');
       setActiveUser({ username: 'admin', role: 'Admin' });
       setRoomSenderName('Admin-Command');
@@ -459,6 +512,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
 
     if (foundUser || (cleanUser === 'user' && cleanPass === 'user')) {
       const loggedUser = foundUser || { username: 'user', role: 'User' };
+      recordLoginAttempt(loggedUser.username, 'SUCCESS', 'LOW');
       if (loggedUser.role === 'Admin' || loggedUser.username.toLowerCase() === 'admin') {
         setAuthRole('admin');
         setActiveUser({ username: loggedUser.username, role: 'Admin' });
@@ -472,6 +526,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
         setActiveTab('chat');
       }
     } else {
+      recordLoginAttempt(loginUsername || 'Unknown', 'FAILED', 'HIGH SUSPICIOUS');
       setLoginError('Invalid Username or Passkey credentials!');
     }
   };
@@ -653,7 +708,9 @@ export default function SecComPortal({ onEmergencyPurge }) {
       sender: authRole === 'admin' ? (adminChatPerspective === 'Admin' ? 'Admin' : target) : activeUser?.username || 'User',
       cipher: cipherPayload,
       text: currentInput,
-      time: formatTimestamp()
+      time: formatTimestamp(),
+      status: 'delivered',
+      isGhost: isGhostMode
     };
 
     if (isSupabaseConfigured && supabase) {
@@ -675,6 +732,31 @@ export default function SecComPortal({ onEmergencyPurge }) {
         message: msg
       });
     }
+
+    if (isGhostMode) {
+      setTimeout(() => {
+        handleDestroyDirectMessage(target, msgId);
+      }, 6000);
+    }
+  };
+
+  // MARK DIRECT MESSAGES AS SEEN (DOUBLE CYAN TICKS)
+  const markDirectMessagesAsSeen = (targetUser) => {
+    setAdminDirectMessages((prev) => {
+      const list = prev[targetUser] || [];
+      let updatedAny = false;
+      const updated = list.map((m) => {
+        if (m.sender !== (authRole === 'admin' ? 'Admin' : activeUser?.username) && m.status !== 'seen') {
+          updatedAny = true;
+          return { ...m, status: 'seen' };
+        }
+        return m;
+      });
+      if (updatedAny) {
+        emitRealtimeSync({ type: 'MARK_MESSAGES_SEEN', targetUser: targetUser });
+      }
+      return { ...prev, [targetUser]: updated };
+    });
   };
 
   // ADMIN BROADCAST & BURN NOTE TRANSMISSION
@@ -1379,13 +1461,28 @@ export default function SecComPortal({ onEmergencyPurge }) {
                       </div>
                     </div>
 
-                    <button
-                      onClick={() => handlePurgeAllDirectMessages(selectedChatUser)}
-                      className="px-3 py-1.5 rounded-lg bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-500/40 text-xs font-mono flex items-center gap-1"
-                    >
-                      <Flame className="w-3.5 h-3.5 text-rose-400" />
-                      <span>Clear Chat with {selectedChatUser}</span>
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setIsGhostMode(!isGhostMode)}
+                        className={`px-3 py-1.5 rounded-lg border text-xs font-mono font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                          isGhostMode
+                            ? 'bg-purple-950/90 border-purple-500 text-purple-300 shadow-[0_0_15px_rgba(168,85,247,0.4)] animate-pulse'
+                            : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                        }`}
+                        title="Toggle Ghost Mode: Messages self-destruct after viewing"
+                      >
+                        <Ghost className={`w-3.5 h-3.5 ${isGhostMode ? 'text-purple-400' : 'text-slate-400'}`} />
+                        <span>{isGhostMode ? '👻 Ghost Mode: ON' : 'Ghost Mode: OFF'}</span>
+                      </button>
+
+                      <button
+                        onClick={() => handlePurgeAllDirectMessages(selectedChatUser)}
+                        className="px-3 py-1.5 rounded-lg bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-500/40 text-xs font-mono flex items-center gap-1"
+                      >
+                        <Flame className="w-3.5 h-3.5 text-rose-400" />
+                        <span>Clear Chat with {selectedChatUser}</span>
+                      </button>
+                    </div>
                   </div>
 
                   {/* Message History */}
@@ -1401,7 +1498,9 @@ export default function SecComPortal({ onEmergencyPurge }) {
                         <div
                           key={msg.id}
                           className={`p-3.5 rounded-2xl max-w-md border space-y-1.5 shadow-md relative ${
-                            msg.sender === 'Admin'
+                            msg.isGhost
+                              ? 'bg-purple-950/90 border-purple-500/70 text-purple-100 shadow-[0_0_15px_rgba(168,85,247,0.2)]'
+                              : msg.sender === 'Admin'
                               ? 'ml-auto bg-amber-950/80 border-amber-500/40 text-amber-100'
                               : 'bg-slate-900 border-cyan-500/40 text-cyan-100'
                           }`}
@@ -1413,6 +1512,20 @@ export default function SecComPortal({ onEmergencyPurge }) {
                             
                             <div className="flex items-center gap-2">
                               <span>{msg.time}</span>
+
+                              {/* Message Status Ticks (Single Tick ✓, Double Gray ✓✓, Double Blue/Cyan ✓✓) */}
+                              {msg.sender === 'Admin' && (
+                                <span className="inline-flex items-center ml-1">
+                                  {msg.status === 'seen' ? (
+                                    <CheckCheck className="w-3.5 h-3.5 text-cyan-400" title="Seen by Recipient (Double Blue Ticks)" />
+                                  ) : msg.status === 'delivered' ? (
+                                    <CheckCheck className="w-3.5 h-3.5 text-slate-400" title="Delivered to Recipient (Double Gray Ticks)" />
+                                  ) : (
+                                    <Check className="w-3.5 h-3.5 text-slate-500" title="Sent (Single Tick)" />
+                                  )}
+                                </span>
+                              )}
+
                               <button
                                 onClick={() => handleDestroyDirectMessage(selectedChatUser, msg.id)}
                                 className="p-1 rounded bg-rose-950 hover:bg-rose-600 text-rose-300 hover:text-white transition-colors border border-rose-500/40"
@@ -1421,6 +1534,13 @@ export default function SecComPortal({ onEmergencyPurge }) {
                               </button>
                             </div>
                           </div>
+
+                          {msg.isGhost && (
+                            <div className="text-[10px] font-mono text-purple-300 bg-purple-900/60 px-2 py-0.5 rounded border border-purple-500/40 flex items-center gap-1 w-max my-1 animate-pulse">
+                              <Ghost className="w-3 h-3 text-purple-400" />
+                              <span>Ghost Mode (Auto-destructs after view)</span>
+                            </div>
+                          )}
 
                           <p className="text-sm text-slate-100 font-sans font-medium">{msg.text}</p>
 
@@ -1442,15 +1562,15 @@ export default function SecComPortal({ onEmergencyPurge }) {
                       value={directMsgInput}
                       onChange={(e) => setDirectMsgInput(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleSendAdminDirectMessage()}
-                      placeholder={`Send confidential message to ${selectedChatUser}...`}
-                      className="flex-1 p-3 rounded-xl bg-slate-900 border border-slate-800 text-xs font-mono text-slate-100 focus:outline-none focus:border-amber-500"
+                      placeholder={isGhostMode ? `👻 Ghost Mode Active: Send auto-destructing message to ${selectedChatUser}...` : `Send confidential message to ${selectedChatUser}...`}
+                      className={`flex-1 p-3 rounded-xl bg-slate-900 border text-xs font-mono text-slate-100 focus:outline-none ${isGhostMode ? 'border-purple-500/70 focus:border-purple-400' : 'border-slate-800 focus:border-amber-500'}`}
                     />
                     <button
                       onClick={handleSendAdminDirectMessage}
-                      className="px-5 py-3 rounded-xl bg-amber-600 hover:bg-amber-500 text-slate-950 font-mono font-bold text-xs uppercase flex items-center gap-2 shadow-[0_0_15px_rgba(245,158,11,0.3)] shrink-0"
+                      className={`px-5 py-3 rounded-xl font-mono font-bold text-xs uppercase flex items-center gap-2 shrink-0 ${isGhostMode ? 'bg-purple-600 hover:bg-purple-500 text-white shadow-[0_0_15px_rgba(168,85,247,0.4)]' : 'bg-amber-600 hover:bg-amber-500 text-slate-950 shadow-[0_0_15px_rgba(245,158,11,0.3)]'}`}
                     >
                       <Send className="w-4 h-4" />
-                      <span>Send to {selectedChatUser}</span>
+                      <span>{isGhostMode ? 'Ghost Send' : `Send to ${selectedChatUser}`}</span>
                     </button>
                   </div>
 
@@ -1472,9 +1592,24 @@ export default function SecComPortal({ onEmergencyPurge }) {
                     </div>
                   </div>
 
-                  <span className="text-xs px-2.5 py-1 rounded bg-amber-950 text-amber-400 font-mono border border-amber-800">
-                    Isolated Direct Line
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setIsGhostMode(!isGhostMode)}
+                      className={`px-3 py-1.5 rounded-lg border text-xs font-mono font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                        isGhostMode
+                          ? 'bg-purple-950/90 border-purple-500 text-purple-300 shadow-[0_0_15px_rgba(168,85,247,0.4)] animate-pulse'
+                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                      title="Toggle Ghost Mode: Messages self-destruct after viewing"
+                    >
+                      <Ghost className={`w-3.5 h-3.5 ${isGhostMode ? 'text-purple-400' : 'text-slate-400'}`} />
+                      <span>{isGhostMode ? '👻 Ghost Mode: ON' : 'Ghost Mode: OFF'}</span>
+                    </button>
+
+                    <span className="text-xs px-2.5 py-1 rounded bg-amber-950 text-amber-400 font-mono border border-amber-800">
+                      Isolated Direct Line
+                    </span>
+                  </div>
                 </div>
 
                 <div className="flex-1 p-5 overflow-y-auto space-y-4 font-mono text-xs bg-slate-950/60">
@@ -1489,7 +1624,9 @@ export default function SecComPortal({ onEmergencyPurge }) {
                       <div
                         key={msg.id}
                         className={`p-3.5 rounded-2xl max-w-md border space-y-1.5 shadow-md relative ${
-                          msg.sender === activeUser?.username
+                          msg.isGhost
+                            ? 'bg-purple-950/90 border-purple-500/70 text-purple-100 shadow-[0_0_15px_rgba(168,85,247,0.2)]'
+                            : msg.sender === activeUser?.username
                             ? 'ml-auto bg-cyan-950/80 border-cyan-500/40 text-cyan-100'
                             : 'bg-amber-950/80 border-amber-500/40 text-amber-100'
                         }`}
@@ -1498,8 +1635,29 @@ export default function SecComPortal({ onEmergencyPurge }) {
                           <span className={`font-bold ${msg.sender === activeUser?.username ? 'text-cyan-400' : 'text-amber-400'}`}>
                             {msg.sender}
                           </span>
-                          <span>{msg.time}</span>
+                          <div className="flex items-center gap-2">
+                            <span>{msg.time}</span>
+                            {/* Message Status Ticks (Single Tick ✓, Double Gray ✓✓, Double Blue/Cyan ✓✓) */}
+                            {msg.sender === activeUser?.username && (
+                              <span className="inline-flex items-center ml-1">
+                                {msg.status === 'seen' ? (
+                                  <CheckCheck className="w-3.5 h-3.5 text-cyan-400" title="Seen by Admin (Double Blue Ticks)" />
+                                ) : msg.status === 'delivered' ? (
+                                  <CheckCheck className="w-3.5 h-3.5 text-slate-400" title="Delivered to Admin (Double Gray Ticks)" />
+                                ) : (
+                                  <Check className="w-3.5 h-3.5 text-slate-500" title="Sent (Single Tick)" />
+                                )}
+                              </span>
+                            )}
+                          </div>
                         </div>
+
+                        {msg.isGhost && (
+                          <div className="text-[10px] font-mono text-purple-300 bg-purple-900/60 px-2 py-0.5 rounded border border-purple-500/40 flex items-center gap-1 w-max my-1 animate-pulse">
+                            <Ghost className="w-3 h-3 text-purple-400" />
+                            <span>Ghost Mode (Auto-destructs after view)</span>
+                          </div>
+                        )}
 
                         <p className="text-sm text-slate-100 font-sans font-medium">{msg.text}</p>
 
@@ -1520,15 +1678,15 @@ export default function SecComPortal({ onEmergencyPurge }) {
                     value={directMsgInput}
                     onChange={(e) => setDirectMsgInput(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleSendAdminDirectMessage()}
-                    placeholder="Send direct confidential message to Admin..."
-                    className="flex-1 p-3 rounded-xl bg-slate-900 border border-slate-800 text-xs font-mono text-slate-100 focus:outline-none focus:border-amber-500"
+                    placeholder={isGhostMode ? "👻 Ghost Mode Active: Send auto-destructing message to Admin..." : "Send direct confidential message to Admin..."}
+                    className={`flex-1 p-3 rounded-xl bg-slate-900 border text-xs font-mono text-slate-100 focus:outline-none ${isGhostMode ? 'border-purple-500/70 focus:border-purple-400' : 'border-slate-800 focus:border-amber-500'}`}
                   />
                   <button
                     onClick={handleSendAdminDirectMessage}
-                    className="px-5 py-3 rounded-xl bg-amber-600 hover:bg-amber-500 text-slate-950 font-mono font-bold text-xs uppercase flex items-center gap-2 shadow-[0_0_15px_rgba(245,158,11,0.3)] shrink-0"
+                    className={`px-5 py-3 rounded-xl font-mono font-bold text-xs uppercase flex items-center gap-2 shrink-0 ${isGhostMode ? 'bg-purple-600 hover:bg-purple-500 text-white shadow-[0_0_15px_rgba(168,85,247,0.4)]' : 'bg-amber-600 hover:bg-amber-500 text-slate-950 shadow-[0_0_15px_rgba(245,158,11,0.3)]'}`}
                   >
                     <Send className="w-4 h-4" />
-                    <span>Send to Admin</span>
+                    <span>{isGhostMode ? 'Ghost Send' : 'Send to Admin'}</span>
                   </button>
                 </div>
               </div>
@@ -1688,153 +1846,402 @@ export default function SecComPortal({ onEmergencyPurge }) {
           </div>
         )}
 
-        {/* TAB: ADMIN USER MANAGER (VISIBLE ONLY TO ADMIN LOGIN) */}
+        {/* TAB: ADMIN SECURITY CONTROL & AUDIT OPERATIONS (VISIBLE ONLY TO ADMIN LOGIN) */}
         {activeTab === 'admin' && authRole === 'admin' && (
-          <div className="space-y-8 animate-in fade-in">
-            <div className="bg-slate-900/90 rounded-2xl p-6 border border-amber-500/40 shadow-2xl flex items-center justify-between">
+          <div className="space-y-6 animate-in fade-in">
+            
+            {/* Admin Header & Sub-Tab Toolbar */}
+            <div className="bg-slate-900/90 rounded-2xl p-6 border border-amber-500/40 shadow-2xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
               <div className="flex items-center gap-3">
                 <div className="p-3 rounded-xl bg-amber-950 border border-amber-500/50 text-amber-400">
-                  <Users className="w-6 h-6" />
+                  <ShieldAlert className="w-6 h-6 animate-pulse" />
                 </div>
                 <div>
-                  <h2 className="font-mono font-bold text-xl text-slate-100">Admin User Credentials Control</h2>
-                  <p className="text-xs text-slate-400 font-mono">Full CRUD permissions on Supabase / memory user accounts</p>
+                  <h2 className="font-mono font-bold text-xl text-slate-100 flex items-center gap-2">
+                    Admin Security Control & Operations Panel
+                  </h2>
+                  <p className="text-xs text-slate-400 font-mono">
+                    User Management, Login History Audit, Suspicious Intrusion Alerts, and IP Tracking
+                  </p>
                 </div>
+              </div>
+
+              {/* Sub-Tab Toolbar Buttons */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={() => setAdminSubTab('users')}
+                  className={`px-3.5 py-2 rounded-xl text-xs font-mono font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                    adminSubTab === 'users'
+                      ? 'bg-amber-950 border border-amber-500 text-amber-300 shadow-md'
+                      : 'bg-slate-950 border border-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Users className="w-3.5 h-3.5 text-amber-400" />
+                  <span>User Manager ({usersList.length})</span>
+                </button>
+
+                <button
+                  onClick={() => setAdminSubTab('history')}
+                  className={`px-3.5 py-2 rounded-xl text-xs font-mono font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                    adminSubTab === 'history'
+                      ? 'bg-cyan-950 border border-cyan-500 text-cyan-300 shadow-md'
+                      : 'bg-slate-950 border border-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Clock className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Login History ({loginHistory.length})</span>
+                </button>
+
+                <button
+                  onClick={() => setAdminSubTab('alerts')}
+                  className={`px-3.5 py-2 rounded-xl text-xs font-mono font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                    adminSubTab === 'alerts'
+                      ? 'bg-rose-950 border border-rose-500 text-rose-300 shadow-md'
+                      : 'bg-slate-950 border border-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
+                  <span>Suspicious Alerts</span>
+                  {loginHistory.filter(l => l.risk === 'HIGH SUSPICIOUS').length > 0 && (
+                    <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-rose-600 text-white animate-pulse">
+                      {loginHistory.filter(l => l.risk === 'HIGH SUSPICIOUS').length}
+                    </span>
+                  )}
+                </button>
+
+                <button
+                  onClick={() => setAdminSubTab('ips')}
+                  className={`px-3.5 py-2 rounded-xl text-xs font-mono font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                    adminSubTab === 'ips'
+                      ? 'bg-emerald-950 border border-emerald-500 text-emerald-300 shadow-md'
+                      : 'bg-slate-950 border border-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Globe className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>IP History Log</span>
+                </button>
               </div>
             </div>
 
-            {/* Create & List Users */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-              <div className="lg:col-span-5 bg-slate-900/80 rounded-2xl p-5 border border-cyan-500/30 shadow-xl space-y-4">
-                <h3 className="font-mono font-bold text-sm text-cyan-400 flex items-center gap-2">
-                  <UserPlus className="w-4 h-4" /> Create New Operative Account
-                </h3>
-                <form onSubmit={handleCreateUser} className="space-y-3">
-                  <input
-                    type="text"
-                    required
-                    placeholder="Username"
-                    value={newUsername}
-                    onChange={(e) => setNewUsername(e.target.value)}
-                    className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-100"
-                  />
-                  <input
-                    type="text"
-                    required
-                    placeholder="Passkey"
-                    value={newPasskey}
-                    onChange={(e) => setNewPasskey(e.target.value)}
-                    className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-100"
-                  />
-                  <div className="flex gap-2">
-                    <select
-                      value={newRole}
-                      onChange={(e) => setNewRole(e.target.value)}
-                      className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-300"
-                    >
-                      <option value="User">User Role</option>
-                      <option value="Admin">Admin Role</option>
-                    </select>
-                    <button
-                      type="submit"
-                      className="flex-1 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-mono font-bold text-xs uppercase"
-                    >
-                      Create User
-                    </button>
-                  </div>
-                </form>
-              </div>
+            {/* SUB-TAB 1: USER MANAGEMENT (CRUD) */}
+            {adminSubTab === 'users' && (
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 animate-in fade-in">
+                <div className="lg:col-span-5 bg-slate-900/80 rounded-2xl p-5 border border-cyan-500/30 shadow-xl space-y-4">
+                  <h3 className="font-mono font-bold text-sm text-cyan-400 flex items-center gap-2">
+                    <UserPlus className="w-4 h-4" /> Create New Operative Account
+                  </h3>
+                  <form onSubmit={handleCreateUser} className="space-y-3">
+                    <input
+                      type="text"
+                      required
+                      placeholder="Username"
+                      value={newUsername}
+                      onChange={(e) => setNewUsername(e.target.value)}
+                      className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-100"
+                    />
+                    <input
+                      type="text"
+                      required
+                      placeholder="Passkey"
+                      value={newPasskey}
+                      onChange={(e) => setNewPasskey(e.target.value)}
+                      className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-100"
+                    />
+                    <div className="flex gap-2">
+                      <select
+                        value={newRole}
+                        onChange={(e) => setNewRole(e.target.value)}
+                        className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-300"
+                      >
+                        <option value="User">User Role</option>
+                        <option value="Admin">Admin Role</option>
+                      </select>
+                      <button
+                        type="submit"
+                        className="flex-1 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-mono font-bold text-xs uppercase"
+                      >
+                        Create User
+                      </button>
+                    </div>
+                  </form>
+                </div>
 
-              <div className="lg:col-span-7 bg-slate-900/80 rounded-2xl p-5 border border-slate-800 shadow-xl space-y-4">
-                <h3 className="font-mono font-bold text-sm text-slate-200">Registered Vault Users</h3>
+                <div className="lg:col-span-7 bg-slate-900/80 rounded-2xl p-5 border border-slate-800 shadow-xl space-y-4">
+                  <h3 className="font-mono font-bold text-sm text-slate-200">Registered Vault Users</h3>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse text-xs font-mono">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-slate-400 text-[10px]">
+                          <th className="py-2.5 px-3">Username</th>
+                          <th className="py-2.5 px-3">Passkey</th>
+                          <th className="py-2.5 px-3">Role</th>
+                          <th className="py-2.5 px-3 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60">
+                        {usersList.map((user) => (
+                          <tr key={user.id} className="hover:bg-slate-950/50">
+                            {editingUserId === user.id ? (
+                              <>
+                                <td className="py-2 px-2">
+                                  <input
+                                    type="text"
+                                    value={editUsername}
+                                    onChange={(e) => setEditUsername(e.target.value)}
+                                    className="w-full p-1.5 rounded bg-slate-950 border border-cyan-500 text-xs text-slate-100 font-mono"
+                                  />
+                                </td>
+                                <td className="py-2 px-2">
+                                  <input
+                                    type="text"
+                                    value={editPasskey}
+                                    onChange={(e) => setEditPasskey(e.target.value)}
+                                    className="w-full p-1.5 rounded bg-slate-950 border border-cyan-500 text-xs text-slate-100 font-mono"
+                                  />
+                                </td>
+                                <td className="py-2 px-2">
+                                  <select
+                                    value={editRole}
+                                    onChange={(e) => setEditRole(e.target.value)}
+                                    className="p-1.5 rounded bg-slate-950 border border-cyan-500 text-xs text-slate-100 font-mono"
+                                  >
+                                    <option value="User">User</option>
+                                    <option value="Admin">Admin</option>
+                                  </select>
+                                </td>
+                                <td className="py-2 px-2 text-right space-x-1">
+                                  <button
+                                    onClick={() => handleSaveEditUser(user.id)}
+                                    className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold rounded text-[11px]"
+                                  >
+                                    Save
+                                  </button>
+                                  <button
+                                    onClick={() => setEditingUserId(null)}
+                                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px]"
+                                  >
+                                    Cancel
+                                  </button>
+                                </td>
+                              </>
+                            ) : (
+                              <>
+                                <td className="py-3 px-3 font-semibold text-slate-100">{user.username}</td>
+                                <td className="py-3 px-3 text-slate-400">{user.passkey}</td>
+                                <td className="py-3 px-3">
+                                  <span className={`px-2 py-0.5 rounded text-[10px] ${user.role === 'Admin' ? 'bg-amber-950 text-amber-400 border border-amber-500/40' : 'bg-cyan-950 text-cyan-400 border border-cyan-500/40'}`}>
+                                    {user.role}
+                                  </span>
+                                </td>
+                                <td className="py-3 px-3 text-right space-x-2">
+                                  <button
+                                    onClick={() => handleStartEditUser(user)}
+                                    className="text-cyan-400 hover:text-white font-mono text-[11px] underline"
+                                    title="Edit User Details"
+                                  >
+                                    Edit Details
+                                  </button>
+                                  {user.username !== 'admin' && (
+                                    <button onClick={() => handleDeleteUser(user.id)} className="text-rose-400 hover:text-white" title="Delete User">
+                                      <Trash2 className="w-4 h-4 inline" />
+                                    </button>
+                                  )}
+                                </td>
+                              </>
+                            )}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* SUB-TAB 2: LOGIN HISTORY AUDIT */}
+            {adminSubTab === 'history' && (
+              <div className="bg-slate-900/80 rounded-2xl p-6 border border-cyan-500/30 shadow-xl space-y-4 animate-in fade-in font-mono">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <div>
+                    <h3 className="font-bold text-sm text-cyan-400 flex items-center gap-2">
+                      <Clock className="w-4 h-4" /> Gateway Login History Audit Log
+                    </h3>
+                    <p className="text-[11px] text-slate-400">Recorded authentication requests with timestamp, IP, device & status</p>
+                  </div>
+                  <span className="text-xs text-slate-400 bg-slate-950 px-3 py-1 rounded border border-slate-800">
+                    Total Logs: {loginHistory.length}
+                  </span>
+                </div>
+
                 <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse text-xs font-mono">
+                  <table className="w-full text-left border-collapse text-xs">
                     <thead>
-                      <tr className="border-b border-slate-800 text-slate-400 text-[10px]">
+                      <tr className="border-b border-slate-800 text-slate-400 text-[10px] uppercase">
+                        <th className="py-2.5 px-3">Date & Time</th>
                         <th className="py-2.5 px-3">Username</th>
-                        <th className="py-2.5 px-3">Passkey</th>
-                        <th className="py-2.5 px-3">Role</th>
-                        <th className="py-2.5 px-3 text-right">Actions</th>
+                        <th className="py-2.5 px-3">IP Address</th>
+                        <th className="py-2.5 px-3">Device / Client</th>
+                        <th className="py-2.5 px-3">Auth Status</th>
+                        <th className="py-2.5 px-3 text-right">Risk Level</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/60">
-                      {usersList.map((user) => (
-                        <tr key={user.id} className="hover:bg-slate-950/50">
-                          {editingUserId === user.id ? (
-                            <>
-                              <td className="py-2 px-2">
-                                <input
-                                  type="text"
-                                  value={editUsername}
-                                  onChange={(e) => setEditUsername(e.target.value)}
-                                  className="w-full p-1.5 rounded bg-slate-950 border border-cyan-500 text-xs text-slate-100 font-mono"
-                                />
-                              </td>
-                              <td className="py-2 px-2">
-                                <input
-                                  type="text"
-                                  value={editPasskey}
-                                  onChange={(e) => setEditPasskey(e.target.value)}
-                                  className="w-full p-1.5 rounded bg-slate-950 border border-cyan-500 text-xs text-slate-100 font-mono"
-                                />
-                              </td>
-                              <td className="py-2 px-2">
-                                <select
-                                  value={editRole}
-                                  onChange={(e) => setEditRole(e.target.value)}
-                                  className="p-1.5 rounded bg-slate-950 border border-cyan-500 text-xs text-slate-100 font-mono"
-                                >
-                                  <option value="User">User</option>
-                                  <option value="Admin">Admin</option>
-                                </select>
-                              </td>
-                              <td className="py-2 px-2 text-right space-x-1">
-                                <button
-                                  onClick={() => handleSaveEditUser(user.id)}
-                                  className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold rounded text-[11px]"
-                                >
-                                  Save
-                                </button>
-                                <button
-                                  onClick={() => setEditingUserId(null)}
-                                  className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px]"
-                                >
-                                  Cancel
-                                </button>
-                              </td>
-                            </>
-                          ) : (
-                            <>
-                              <td className="py-3 px-3 font-semibold text-slate-100">{user.username}</td>
-                              <td className="py-3 px-3 text-slate-400">{user.passkey}</td>
-                              <td className="py-3 px-3">
-                                <span className={`px-2 py-0.5 rounded text-[10px] ${user.role === 'Admin' ? 'bg-amber-950 text-amber-400 border border-amber-500/40' : 'bg-cyan-950 text-cyan-400 border border-cyan-500/40'}`}>
-                                  {user.role}
-                                </span>
-                              </td>
-                              <td className="py-3 px-3 text-right space-x-2">
-                                <button
-                                  onClick={() => handleStartEditUser(user)}
-                                  className="text-cyan-400 hover:text-white font-mono text-[11px] underline"
-                                  title="Edit User Details"
-                                >
-                                  Edit Details
-                                </button>
-                                {user.username !== 'admin' && (
-                                  <button onClick={() => handleDeleteUser(user.id)} className="text-rose-400 hover:text-white" title="Delete User">
-                                    <Trash2 className="w-4 h-4 inline" />
-                                  </button>
-                                )}
-                              </td>
-                            </>
-                          )}
+                      {loginHistory.map((log) => (
+                        <tr key={log.id} className="hover:bg-slate-950/50">
+                          <td className="py-3 px-3 text-slate-300 text-[11px]">{log.date}</td>
+                          <td className="py-3 px-3 font-bold text-slate-100">{log.username}</td>
+                          <td className="py-3 px-3 text-cyan-400 flex items-center gap-1">
+                            <MapPin className="w-3 h-3 text-cyan-400 shrink-0" />
+                            <span>{log.ip}</span>
+                          </td>
+                          <td className="py-3 px-3 text-slate-400 text-[11px]">{log.device}</td>
+                          <td className="py-3 px-3">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              log.status === 'SUCCESS'
+                                ? 'bg-emerald-950 text-emerald-400 border border-emerald-500/40'
+                                : 'bg-rose-950 text-rose-400 border border-rose-500/40 animate-pulse'
+                            }`}>
+                              {log.status}
+                            </span>
+                          </td>
+                          <td className="py-3 px-3 text-right">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              log.risk === 'HIGH SUSPICIOUS'
+                                ? 'bg-rose-900 text-rose-200 border border-rose-500'
+                                : 'bg-slate-950 text-slate-400 border border-slate-800'
+                            }`}>
+                              {log.risk}
+                            </span>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
               </div>
-            </div>
+            )}
+
+            {/* SUB-TAB 3: SUSPICIOUS LOGIN ALERTS */}
+            {adminSubTab === 'alerts' && (
+              <div className="bg-slate-900/80 rounded-2xl p-6 border border-rose-500/40 shadow-xl space-y-4 animate-in fade-in font-mono">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-rose-950 border border-rose-500/50 text-rose-400 animate-pulse">
+                      <ShieldAlert className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-sm text-rose-300 flex items-center gap-2">
+                        Suspicious Intrusion & Failed Login Alerts
+                      </h3>
+                      <p className="text-[11px] text-slate-400">Flagged unauthorized authentication attempts or brute-force retries</p>
+                    </div>
+                  </div>
+                  <span className="text-xs font-bold text-rose-400 bg-rose-950/80 px-3 py-1 rounded border border-rose-800">
+                    {loginHistory.filter(l => l.risk === 'HIGH SUSPICIOUS').length} Active Alerts
+                  </span>
+                </div>
+
+                {loginHistory.filter(l => l.risk === 'HIGH SUSPICIOUS').length === 0 ? (
+                  <div className="py-12 text-center text-slate-500 space-y-2">
+                    <ShieldCheck className="w-10 h-10 mx-auto text-emerald-400" />
+                    <p className="text-sm font-bold text-slate-300">All Security Systems Operational & Safe</p>
+                    <p className="text-xs text-slate-500">No suspicious login attempts detected in current session.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {loginHistory.filter(l => l.risk === 'HIGH SUSPICIOUS').map((alert) => (
+                      <div key={alert.id} className="p-4 rounded-xl bg-rose-950/40 border border-rose-500/50 flex items-center justify-between gap-4 flex-wrap">
+                        <div className="flex items-center gap-3">
+                          <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 animate-bounce" />
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-rose-300 text-sm">Failed Access: "{alert.username}"</span>
+                              <span className="text-[10px] text-slate-400">({alert.date})</span>
+                            </div>
+                            <p className="text-xs text-slate-300 mt-0.5">
+                              Origin IP: <strong className="text-rose-400">{alert.ip}</strong> • Device: {alert.device}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <span className="px-2.5 py-1 rounded bg-rose-900/90 text-rose-200 text-[10px] font-bold uppercase border border-rose-500">
+                            HIGH RISK ALERT
+                          </span>
+                          <button
+                            onClick={() => {
+                              setLoginHistory(prev => prev.filter(l => l.id !== alert.id));
+                            }}
+                            className="px-3 py-1 rounded bg-slate-950 hover:bg-slate-800 text-slate-300 text-xs border border-slate-700 cursor-pointer"
+                          >
+                            Dismiss Alert
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* SUB-TAB 4: IP HISTORY LOG */}
+            {adminSubTab === 'ips' && (
+              <div className="bg-slate-900/80 rounded-2xl p-6 border border-emerald-500/40 shadow-xl space-y-4 animate-in fade-in font-mono">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-emerald-950 border border-emerald-500/50 text-emerald-400">
+                      <Globe className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-sm text-emerald-400 flex items-center gap-2">
+                        IP Address Access Audit Log
+                      </h3>
+                      <p className="text-[11px] text-slate-400 font-mono">Tracking all connected client IP addresses and network endpoints</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-slate-400 text-[10px] uppercase">
+                        <th className="py-2.5 px-3">IP Address</th>
+                        <th className="py-2.5 px-3">Last Username Attempt</th>
+                        <th className="py-2.5 px-3">Device / Client Type</th>
+                        <th className="py-2.5 px-3">Last Access Date & Time</th>
+                        <th className="py-2.5 px-3 text-right">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60">
+                      {Array.from(new Set(loginHistory.map(l => l.ip))).map(ip => {
+                        const latestLog = loginHistory.find(l => l.ip === ip);
+                        return (
+                          <tr key={ip} className="hover:bg-slate-950/50">
+                            <td className="py-3 px-3 font-bold text-emerald-400 flex items-center gap-1.5">
+                              <MapPin className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                              <span>{ip}</span>
+                            </td>
+                            <td className="py-3 px-3 text-slate-200 font-semibold">{latestLog.username}</td>
+                            <td className="py-3 px-3 text-slate-400">{latestLog.device}</td>
+                            <td className="py-3 px-3 text-slate-400 text-[11px]">{latestLog.date}</td>
+                            <td className="py-3 px-3 text-right">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                latestLog.status === 'SUCCESS'
+                                  ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/40'
+                                  : 'bg-rose-950 text-rose-300 border border-rose-500/40'
+                              }`}>
+                                {latestLog.status}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
           </div>
         )}
 
