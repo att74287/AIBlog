@@ -235,10 +235,17 @@ export default function SecComPortal({ onEmergencyPurge }) {
             time: formatTimestamp(m.created_at),
             autoBurn: m.auto_burn
           };
-          setRoomMessages(prev => ({
-            ...prev,
-            [m.room]: [...(prev[m.room] || []).filter(existing => existing.id !== m.id), msgObj]
-          }));
+          setRoomMessages(prev => {
+            const list = prev[m.room] || [];
+            const exists = list.some(existing => existing.id === m.id || (existing.sender === m.sender && existing.text === m.text));
+            if (exists) {
+              const updated = list.map(existing =>
+                (existing.id === m.id || (existing.sender === m.sender && existing.text === m.text)) ? msgObj : existing
+              );
+              return { ...prev, [m.room]: updated };
+            }
+            return { ...prev, [m.room]: [...list, msgObj] };
+          });
         })
         .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'room_messages' }, (payload) => {
           const deletedId = payload.old.id;
@@ -257,12 +264,20 @@ export default function SecComPortal({ onEmergencyPurge }) {
             sender: m.sender,
             cipher: m.cipher,
             text: m.text,
-            time: formatTimestamp(m.created_at)
+            time: formatTimestamp(m.created_at),
+            status: 'delivered'
           };
-          setAdminDirectMessages(prev => ({
-            ...prev,
-            [m.target_user]: [...(prev[m.target_user] || []).filter(existing => existing.id !== m.id), msgObj]
-          }));
+          setAdminDirectMessages(prev => {
+            const list = prev[m.target_user] || [];
+            const exists = list.some(existing => existing.id === m.id || (existing.sender === m.sender && existing.text === m.text));
+            if (exists) {
+              const updated = list.map(existing =>
+                (existing.id === m.id || (existing.sender === m.sender && existing.text === m.text)) ? msgObj : existing
+              );
+              return { ...prev, [m.target_user]: updated };
+            }
+            return { ...prev, [m.target_user]: [...list, msgObj] };
+          });
         })
         .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'direct_messages' }, (payload) => {
           const deletedId = payload.old.id;
@@ -287,7 +302,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
     if (data.type === 'ROOM_MESSAGE') {
       setRoomMessages((prev) => {
         const roomMsgs = prev[data.room] || [];
-        if (roomMsgs.some((m) => m.id === data.message.id)) return prev;
+        if (roomMsgs.some((m) => m.id === data.message.id || (m.sender === data.message.sender && m.text === data.message.text))) return prev;
         return {
           ...prev,
           [data.room]: [...roomMsgs, data.message]
@@ -295,27 +310,8 @@ export default function SecComPortal({ onEmergencyPurge }) {
       });
     } else if (data.type === 'DIRECT_MESSAGE') {
       setAdminDirectMessages((prev) => {
-        const userMsgs = prev[data.targetUser] || [];
-        if (userMsgs.some((m) => m.id === data.message.id)) return prev;
-        return {
-          ...prev,
-          [data.targetUser]: [...userMsgs, data.message]
-        };
-      });
-    } else if (data.type === 'DESTROY_ROOM_MESSAGE') {
-      setRoomMessages((prev) => ({
-        ...prev,
-        [data.room]: (prev[data.room] || []).filter((m) => m.id !== data.messageId)
-      }));
-    } else if (data.type === 'PURGE_ROOM_MESSAGES') {
-      setRoomMessages((prev) => ({
-        ...prev,
-        [data.room]: []
-      }));
-    } else if (data.type === 'DIRECT_MESSAGE') {
-      setAdminDirectMessages((prev) => {
         const list = prev[data.targetUser] || [];
-        if (list.some((m) => m.id === data.message.id)) return prev;
+        if (list.some((m) => m.id === data.message.id || (m.sender === data.message.sender && m.text === data.message.text))) return prev;
 
         let remaining = list;
         if (data.isGhostMode || isGhostMode) {
@@ -332,6 +328,16 @@ export default function SecComPortal({ onEmergencyPurge }) {
           setTimeout(() => markDirectMessagesAsSeen(data.targetUser), 300);
         }
       }
+    } else if (data.type === 'DESTROY_ROOM_MESSAGE') {
+      setRoomMessages((prev) => ({
+        ...prev,
+        [data.room]: (prev[data.room] || []).filter((m) => m.id !== data.messageId)
+      }));
+    } else if (data.type === 'PURGE_ROOM_MESSAGES') {
+      setRoomMessages((prev) => ({
+        ...prev,
+        [data.room]: []
+      }));
     } else if (data.type === 'DESTROY_DIRECT_MESSAGE') {
       setAdminDirectMessages((prev) => ({
         ...prev,
