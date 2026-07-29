@@ -225,23 +225,78 @@ export default function SecComPortal({ onEmergencyPurge }) {
         }
       };
 
-      // 4. Fetch Face Biometrics from Cloud
+      // 4. Fetch Face Biometrics from Cloud Vault with multi-layer fallback
       const fetchFaceBiometrics = async () => {
+        let loadedProfiles = [];
+
+        // Attempt A: Dedicated face_biometrics table
         try {
           const { data, error } = await supabase.from('face_biometrics').select('*');
           if (!error && data && data.length > 0) {
-            const loadedProfiles = data.map((item) => ({
+            loadedProfiles = data.map((item) => ({
               id: item.id || 'face-' + Math.random(),
               name: item.name || 'Admin Enrolled Face',
               samples: typeof item.samples === 'string' ? JSON.parse(item.samples) : item.samples,
               vector: typeof item.vector === 'string' ? JSON.parse(item.vector) : item.vector,
               date: item.created_at ? formatTimestamp(item.created_at) : formatTimestamp()
             }));
-            setFaceProfilesList(loadedProfiles);
-            localStorage.setItem('seccom_admin_face_profiles', JSON.stringify(loadedProfiles));
           }
         } catch (err) {
-          console.log('Supabase face fetch info:', err);
+          console.log('face_biometrics table fetch info:', err);
+        }
+
+        // Attempt B: Fallback query from room_messages (SYS_FACE_BIOMETRICS)
+        if (loadedProfiles.length === 0) {
+          try {
+            const { data, error } = await supabase
+              .from('room_messages')
+              .select('*')
+              .eq('room', 'SYS_FACE_BIOMETRICS')
+              .order('created_at', { ascending: false })
+              .limit(1);
+
+            if (!error && data && data.length > 0 && data[0].text) {
+              const parsed = JSON.parse(data[0].text);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                loadedProfiles = parsed;
+              }
+            }
+          } catch (err) {
+            console.log('SYS_FACE_BIOMETRICS fallback fetch info:', err);
+          }
+        }
+
+        if (loadedProfiles.length > 0) {
+          setFaceProfilesList(loadedProfiles);
+          localStorage.setItem('seccom_admin_face_profiles', JSON.stringify(loadedProfiles));
+        }
+      };
+
+      // 5. Fetch Active Global Broadcast from Cloud
+      const fetchActiveBroadcast = async () => {
+        try {
+          const { data, error } = await supabase
+            .from('room_messages')
+            .select('*')
+            .eq('room', 'GLOBAL_BROADCAST')
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+          if (!error && data && data.length > 0 && data[0].text) {
+            try {
+              const bcast = JSON.parse(data[0].text);
+              setActiveBroadcastNote(bcast);
+            } catch {
+              setActiveBroadcastNote({
+                id: data[0].id,
+                sender: 'Admin-Command',
+                text: data[0].text,
+                time: formatTimestamp(data[0].created_at)
+              });
+            }
+          }
+        } catch (err) {
+          console.log('Global Broadcast fetch info:', err);
         }
       };
 
@@ -249,11 +304,34 @@ export default function SecComPortal({ onEmergencyPurge }) {
       fetchRoomMessages();
       fetchDirectMessages();
       fetchFaceBiometrics();
+      fetchActiveBroadcast();
 
-      // 4. Subscribe to Supabase Realtime Channels
+      // 6. Subscribe to Supabase Realtime Channels
       const channel = supabase.channel('seccom_realtime_db')
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'room_messages' }, (payload) => {
           const m = payload.new;
+
+          // Check if message is a System Face Sync or Global Broadcast
+          if (m.room === 'SYS_FACE_BIOMETRICS' && m.text) {
+            try {
+              const parsed = JSON.parse(m.text);
+              if (Array.isArray(parsed)) {
+                setFaceProfilesList(parsed);
+                localStorage.setItem('seccom_admin_face_profiles', JSON.stringify(parsed));
+              }
+            } catch {}
+            return;
+          }
+
+          if (m.room === 'GLOBAL_BROADCAST' && m.text) {
+            try {
+              const bcast = JSON.parse(m.text);
+              setActiveBroadcastNote(bcast);
+              localStorage.setItem('seccom_active_broadcast_note', JSON.stringify(bcast));
+            } catch {}
+            return;
+          }
+
           const msgObj = {
             id: m.id,
             sender: m.sender,
@@ -394,6 +472,10 @@ export default function SecComPortal({ onEmergencyPurge }) {
       });
     } else if (data.type === 'ADMIN_BROADCAST') {
       setActiveBroadcastNote(data.broadcast);
+      localStorage.setItem('seccom_active_broadcast_note', JSON.stringify(data.broadcast));
+
+      const broadcastMsgText = `📢 BROADCAST BY ADMIN (${data.broadcast.time})\n\n${data.broadcast.text}`;
+
       setRoomMessages((prev) => {
         const genMsgs = prev['#general-vault'] || [];
         if (genMsgs.some((m) => m.id === data.broadcast.id)) return prev;
@@ -403,13 +485,35 @@ export default function SecComPortal({ onEmergencyPurge }) {
             ...genMsgs,
             {
               id: data.broadcast.id,
-              sender: '📢 ADMIN BROADCAST',
+              sender: '📢 BROADCAST BY ADMIN',
               cipher: 'SECCOM-BROADCAST.ALL',
-              text: data.broadcast.text,
+              text: broadcastMsgText,
               time: data.broadcast.time
             }
           ]
         };
+      });
+
+      setAdminDirectMessages((prev) => {
+        const updated = { ...prev };
+        Object.keys(updated).forEach((uKey) => {
+          const list = updated[uKey] || [];
+          if (!list.some((m) => m.id === data.broadcast.id || m.id.startsWith(data.broadcast.id))) {
+            updated[uKey] = [
+              ...list,
+              {
+                id: data.broadcast.id + '-' + uKey,
+                sender: '📢 BROADCAST BY ADMIN',
+                cipher: 'SECCOM-BROADCAST.ALL',
+                text: broadcastMsgText,
+                time: data.broadcast.time,
+                status: 'delivered',
+                isGhost: false
+              }
+            ];
+          }
+        });
+        return updated;
       });
     }
   };
@@ -659,8 +763,17 @@ export default function SecComPortal({ onEmergencyPurge }) {
     setFaceProfilesList(updatedList);
     localStorage.setItem('seccom_admin_face_profiles', JSON.stringify(updatedList));
 
-    // Save to Supabase Cloud Vault for cross-device availability
+    // Save to Supabase Cloud Vault with multi-layer fallback for cross-device availability
     if (isSupabaseConfigured && supabase) {
+      // 1. Insert into room_messages as SYS_FACE_BIOMETRICS (guaranteed table)
+      supabase.from('room_messages').insert({
+        room: 'SYS_FACE_BIOMETRICS',
+        sender: 'SYSTEM_ADMIN',
+        cipher: 'SECCOM-FACE-BIOMETRICS',
+        text: JSON.stringify(updatedList)
+      }).then(() => {}).catch(() => {});
+
+      // 2. Insert into dedicated face_biometrics table if exists
       supabase.from('face_biometrics').insert({
         id: newProfile.id,
         name: newProfile.name,
@@ -682,6 +795,13 @@ export default function SecComPortal({ onEmergencyPurge }) {
     localStorage.setItem('seccom_admin_face_profiles', JSON.stringify(updatedList));
 
     if (isSupabaseConfigured && supabase) {
+      supabase.from('room_messages').insert({
+        room: 'SYS_FACE_BIOMETRICS',
+        sender: 'SYSTEM_ADMIN',
+        cipher: 'SECCOM-FACE-BIOMETRICS',
+        text: JSON.stringify(updatedList)
+      }).then(() => {}).catch(() => {});
+
       supabase.from('face_biometrics').delete().eq('id', targetId).then(() => {}).catch(() => {});
     }
 
@@ -696,18 +816,41 @@ export default function SecComPortal({ onEmergencyPurge }) {
 
     let activeProfiles = [...faceProfilesList];
 
-    // Fetch latest face profiles from Supabase Cloud DB so scanning works across any device
+    // Multi-layer fetch from Supabase Cloud DB so scanning works across any device
     if (isSupabaseConfigured && supabase) {
       try {
-        const { data, error } = await supabase.from('face_biometrics').select('*');
-        if (!error && data && data.length > 0) {
-          const cloudProfiles = data.map((item) => ({
+        let cloudProfiles = [];
+
+        // Attempt A: Dedicated face_biometrics table
+        const { data: bData, error: bErr } = await supabase.from('face_biometrics').select('*');
+        if (!bErr && bData && bData.length > 0) {
+          cloudProfiles = bData.map((item) => ({
             id: item.id || 'face-' + Math.random(),
             name: item.name || 'Admin Face Profile',
             samples: typeof item.samples === 'string' ? JSON.parse(item.samples) : item.samples,
             vector: typeof item.vector === 'string' ? JSON.parse(item.vector) : item.vector,
             date: item.created_at ? formatTimestamp(item.created_at) : formatTimestamp()
           }));
+        }
+
+        // Attempt B: Fallback room_messages (SYS_FACE_BIOMETRICS)
+        if (cloudProfiles.length === 0) {
+          const { data: sysData, error: sysErr } = await supabase
+            .from('room_messages')
+            .select('*')
+            .eq('room', 'SYS_FACE_BIOMETRICS')
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+          if (!sysErr && sysData && sysData.length > 0 && sysData[0].text) {
+            const parsed = JSON.parse(sysData[0].text);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              cloudProfiles = parsed;
+            }
+          }
+        }
+
+        if (cloudProfiles.length > 0) {
           activeProfiles = cloudProfiles;
           setFaceProfilesList(cloudProfiles);
           localStorage.setItem('seccom_admin_face_profiles', JSON.stringify(cloudProfiles));
@@ -717,9 +860,23 @@ export default function SecComPortal({ onEmergencyPurge }) {
       }
     }
 
+    // Attempt C: Fallback to local storage if state was empty
+    if (!activeProfiles || activeProfiles.length === 0) {
+      const cachedStr = localStorage.getItem('seccom_admin_face_profiles');
+      if (cachedStr) {
+        try {
+          const cached = JSON.parse(cachedStr);
+          if (Array.isArray(cached) && cached.length > 0) {
+            activeProfiles = cached;
+            setFaceProfilesList(cached);
+          }
+        } catch {}
+      }
+    }
+
     if (!activeProfiles || activeProfiles.length === 0) {
       closeLoginFaceScanner();
-      setLoginError('⚠️ No Admin face enrolled yet! Log in with passkey "admin" / "admin" on your main device first and register your face.');
+      setLoginError('⚠️ No Admin face enrolled yet! Log in with passkey "admin" / "admin" on your main device first and register your face in Admin Portal.');
       return;
     }
 
@@ -1158,28 +1315,33 @@ export default function SecComPortal({ onEmergencyPurge }) {
     }
   }, [activeTab, selectedChatUser, activeUser]);
 
-  // ADMIN BROADCAST & BURN NOTE TRANSMISSION
+  // ADMIN BROADCAST & BURN NOTE TRANSMISSION TO ALL USERS & DEVICES
   const handleSendAdminBroadcast = async (e) => {
     if (e) e.preventDefault();
     if (!broadcastInput.trim()) return;
 
     const noteId = 'bcast-' + Date.now();
     const formattedTime = formatTimestamp();
+    const messageText = broadcastInput.trim();
+
     const broadcastObj = {
       id: noteId,
       sender: 'Admin-Command',
-      text: broadcastInput.trim(),
+      text: messageText,
       time: formattedTime
     };
 
     setActiveBroadcastNote(broadcastObj);
+    localStorage.setItem('seccom_active_broadcast_note', JSON.stringify(broadcastObj));
 
-    // Also post to #general-vault room chat automatically
+    const broadcastMsgText = `📢 BROADCAST BY ADMIN (${formattedTime})\n\n${messageText}`;
+
+    // 1. Post to #general-vault room chat
     const broadcastMsg = {
       id: noteId,
-      sender: '📢 ADMIN BROADCAST',
+      sender: '📢 BROADCAST BY ADMIN',
       cipher: 'SECCOM-BROADCAST.ALL',
-      text: broadcastInput.trim(),
+      text: broadcastMsgText,
       time: formattedTime
     };
 
@@ -1188,23 +1350,59 @@ export default function SecComPortal({ onEmergencyPurge }) {
       '#general-vault': [...(prev['#general-vault'] || []), broadcastMsg]
     }));
 
-    if (isSupabaseConfigured && supabase) {
-      await supabase.from('room_messages').insert({
-        room: '#general-vault',
-        sender: '📢 ADMIN BROADCAST',
-        cipher: 'SECCOM-BROADCAST.ALL',
-        text: broadcastInput.trim(),
-        auto_burn: null
+    // 2. Inject into ALL user direct message chats
+    setAdminDirectMessages((prev) => {
+      const updated = { ...prev };
+      const targetList = usersList.map((u) => u.username).filter(Boolean);
+      if (!targetList.includes('user')) targetList.push('user');
+      if (!targetList.includes('operative-alpha')) targetList.push('operative-alpha');
+
+      targetList.forEach((uName) => {
+        const list = updated[uName] || [];
+        updated[uName] = [
+          ...list,
+          {
+            id: noteId + '-' + uName,
+            sender: '📢 BROADCAST BY ADMIN',
+            cipher: 'SECCOM-BROADCAST.ALL',
+            text: broadcastMsgText,
+            time: formattedTime,
+            status: 'delivered',
+            isGhost: false
+          }
+        ];
       });
+      return updated;
+    });
+
+    // 3. Save to Supabase Cloud Database under room 'GLOBAL_BROADCAST' & '#general-vault'
+    if (isSupabaseConfigured && supabase) {
+      await supabase.from('room_messages').insert([
+        {
+          room: 'GLOBAL_BROADCAST',
+          sender: '📢 BROADCAST BY ADMIN',
+          cipher: 'SECCOM-BROADCAST.ALL',
+          text: JSON.stringify(broadcastObj),
+          auto_burn: null
+        },
+        {
+          room: '#general-vault',
+          sender: '📢 BROADCAST BY ADMIN',
+          cipher: 'SECCOM-BROADCAST.ALL',
+          text: broadcastMsgText,
+          auto_burn: null
+        }
+      ]).catch(() => {});
     }
 
+    // 4. Emit Realtime Sync to all open client instances
     emitRealtimeSync({
       type: 'ADMIN_BROADCAST',
       broadcast: broadcastObj
     });
 
     setBroadcastInput('');
-    setBroadcastStatus('✅ Broadcast Note sent to all connected operatives in real-time!');
+    setBroadcastStatus('✅ Broadcast Note sent to ALL connected operatives in real-time with timestamp!');
     setTimeout(() => setBroadcastStatus(''), 5000);
   };
 
@@ -1733,6 +1931,38 @@ export default function SecComPortal({ onEmergencyPurge }) {
           </div>
 
         </div>
+
+      {/* GLOBAL ADMIN BROADCAST BANNER FOR ALL USERS */}
+      {activeBroadcastNote && (
+        <div className="bg-gradient-to-r from-amber-950 via-slate-900 to-amber-950 border-b border-amber-500/60 p-3 shadow-lg animate-in slide-in-from-top duration-300 font-mono">
+          <div className="max-w-7xl mx-auto flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-amber-500 text-slate-950 font-bold shrink-0 animate-bounce">
+                <Flame className="w-5 h-5" />
+              </div>
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2 text-xs text-amber-400 font-bold">
+                  <span>📢 BROADCAST BY ADMIN</span>
+                  <span className="text-[10px] text-slate-400">({activeBroadcastNote.time})</span>
+                </div>
+                <p className="text-xs text-slate-100 font-sans font-medium">
+                  {activeBroadcastNote.text}
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={() => {
+                setActiveBroadcastNote(null);
+                localStorage.removeItem('seccom_active_broadcast_note');
+              }}
+              className="px-3 py-1.5 rounded-lg bg-amber-950 hover:bg-amber-900 border border-amber-500/50 text-amber-300 text-[11px] font-bold transition-all cursor-pointer shrink-0"
+            >
+              Dismiss / Mark Read
+            </button>
+          </div>
+        </div>
+      )}
 
         {/* ROLE-BASED TAB NAVIGATION */}
         <div className="max-w-7xl mx-auto px-3 sm:px-6 overflow-x-auto border-t border-slate-800 flex items-center gap-1.5 sm:gap-2 pt-2 scrollbar-none whitespace-nowrap">
