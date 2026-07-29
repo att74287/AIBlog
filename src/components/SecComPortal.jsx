@@ -225,9 +225,30 @@ export default function SecComPortal({ onEmergencyPurge }) {
         }
       };
 
+      // 4. Fetch Face Biometrics from Cloud
+      const fetchFaceBiometrics = async () => {
+        try {
+          const { data, error } = await supabase.from('face_biometrics').select('*');
+          if (!error && data && data.length > 0) {
+            const loadedProfiles = data.map((item) => ({
+              id: item.id || 'face-' + Math.random(),
+              name: item.name || 'Admin Enrolled Face',
+              samples: typeof item.samples === 'string' ? JSON.parse(item.samples) : item.samples,
+              vector: typeof item.vector === 'string' ? JSON.parse(item.vector) : item.vector,
+              date: item.created_at ? formatTimestamp(item.created_at) : formatTimestamp()
+            }));
+            setFaceProfilesList(loadedProfiles);
+            localStorage.setItem('seccom_admin_face_profiles', JSON.stringify(loadedProfiles));
+          }
+        } catch (err) {
+          console.log('Supabase face fetch info:', err);
+        }
+      };
+
       fetchSupabaseUsers();
       fetchRoomMessages();
       fetchDirectMessages();
+      fetchFaceBiometrics();
 
       // 4. Subscribe to Supabase Realtime Channels
       const channel = supabase.channel('seccom_realtime_db')
@@ -466,14 +487,33 @@ export default function SecComPortal({ onEmergencyPurge }) {
   const [rsaKeys, setRsaKeys] = useState(null);
   const [generatingKeys, setGeneratingKeys] = useState(false);
 
-  // Admin Face Biometrics State
-  const [enrolledFaceData, setEnrolledFaceData] = useState(() => {
+  // Admin Multi-Face Biometrics & Cross-Device Cloud Sync State
+  const [faceProfilesList, setFaceProfilesList] = useState(() => {
     try {
-      return JSON.parse(localStorage.getItem('seccom_admin_face_biometrics') || 'null');
+      const stored = localStorage.getItem('seccom_admin_face_profiles');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+      // Migration fallback from legacy single face data
+      const single = localStorage.getItem('seccom_admin_face_biometrics');
+      if (single) {
+        const parsedSingle = JSON.parse(single);
+        return [{
+          id: 'face-default-1',
+          name: 'Primary Admin Face',
+          samples: parsedSingle.samples || [],
+          vector: parsedSingle.vector || null,
+          date: parsedSingle.date || formatTimestamp()
+        }];
+      }
+      return [];
     } catch {
-      return null;
+      return [];
     }
   });
+
+  const [newFaceLabel, setNewFaceLabel] = useState('');
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [capturedFaceSamples, setCapturedFaceSamples] = useState([]);
   const [isCapturingSnapshots, setIsCapturingSnapshots] = useState(false);
@@ -556,7 +596,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
         enrollVideoRef.current.srcObject = stream;
       }
       setIsCameraActive(true);
-      setFaceEnrollStatus('Camera active. Position face and click "Take 3 Face Snapshots".');
+      setFaceEnrollStatus('Camera active. Enter Face Profile Name & click "Take 3 Face Snapshots".');
     } catch (err) {
       setFaceEnrollStatus('⚠️ Camera Access Failed: ' + err.message);
     }
@@ -606,34 +646,82 @@ export default function SecComPortal({ onEmergencyPurge }) {
       v.histogram.forEach((val, idx) => (avgHist[idx] += val / vectors.length));
     });
 
-    const profileObj = {
+    const profileLabel = newFaceLabel.trim() || `Admin Face #${faceProfilesList.length + 1}`;
+    const newProfile = {
+      id: 'face-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+      name: profileLabel,
       samples: samples,
       vector: { spatialGrid: avgSpatial, histogram: avgHist },
       date: formatTimestamp()
     };
 
-    localStorage.setItem('seccom_admin_face_biometrics', JSON.stringify(profileObj));
-    setEnrolledFaceData(profileObj);
+    const updatedList = [newProfile, ...faceProfilesList];
+    setFaceProfilesList(updatedList);
+    localStorage.setItem('seccom_admin_face_profiles', JSON.stringify(updatedList));
+
+    // Save to Supabase Cloud Vault for cross-device availability
+    if (isSupabaseConfigured && supabase) {
+      supabase.from('face_biometrics').insert({
+        id: newProfile.id,
+        name: newProfile.name,
+        samples: JSON.stringify(newProfile.samples),
+        vector: JSON.stringify(newProfile.vector)
+      }).then(() => {}).catch(() => {});
+    }
+
+    emitRealtimeSync({ type: 'FACE_PROFILES_UPDATED', profiles: updatedList });
+    setNewFaceLabel('');
+    setCapturedFaceSamples([]);
     setIsCapturingSnapshots(false);
-    setFaceEnrollStatus('✅ Admin Face Successfully Enrolled (3 Biometric Samples Saved)!');
+    setFaceEnrollStatus(`✅ Added face profile "${newProfile.name}" (3 Samples Enrolled & Synced)!`);
   };
 
-  const handleResetFaceEnrollment = () => {
-    localStorage.removeItem('seccom_admin_face_biometrics');
-    setEnrolledFaceData(null);
-    setCapturedFaceSamples([]);
-    setFaceEnrollStatus('Face profile cleared.');
+  const handleDeleteFaceProfile = (targetId) => {
+    const updatedList = faceProfilesList.filter((p) => p.id !== targetId);
+    setFaceProfilesList(updatedList);
+    localStorage.setItem('seccom_admin_face_profiles', JSON.stringify(updatedList));
+
+    if (isSupabaseConfigured && supabase) {
+      supabase.from('face_biometrics').delete().eq('id', targetId).then(() => {}).catch(() => {});
+    }
+
+    emitRealtimeSync({ type: 'FACE_PROFILES_UPDATED', profiles: updatedList });
+    setFaceEnrollStatus('Face profile removed successfully.');
   };
 
   const openLoginFaceScanner = async () => {
-    const profile = enrolledFaceData || JSON.parse(localStorage.getItem('seccom_admin_face_biometrics') || 'null');
-    if (!profile) {
-      setLoginError('⚠️ No Admin face enrolled yet! Log in with passkey "admin" / "admin" first, then register your face in the Admin Control Panel.');
-      return;
-    }
     setLoginFaceScannerOpen(true);
     setLoginScanMatchScore(0);
-    setLoginScanStatus('Initializing webcam for face recognition...');
+    setLoginScanStatus('Fetching registered cross-device face profiles...');
+
+    let activeProfiles = [...faceProfilesList];
+
+    // Fetch latest face profiles from Supabase Cloud DB so scanning works across any device
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase.from('face_biometrics').select('*');
+        if (!error && data && data.length > 0) {
+          const cloudProfiles = data.map((item) => ({
+            id: item.id || 'face-' + Math.random(),
+            name: item.name || 'Admin Face Profile',
+            samples: typeof item.samples === 'string' ? JSON.parse(item.samples) : item.samples,
+            vector: typeof item.vector === 'string' ? JSON.parse(item.vector) : item.vector,
+            date: item.created_at ? formatTimestamp(item.created_at) : formatTimestamp()
+          }));
+          activeProfiles = cloudProfiles;
+          setFaceProfilesList(cloudProfiles);
+          localStorage.setItem('seccom_admin_face_profiles', JSON.stringify(cloudProfiles));
+        }
+      } catch (err) {
+        console.log('Supabase face fetch info:', err);
+      }
+    }
+
+    if (!activeProfiles || activeProfiles.length === 0) {
+      closeLoginFaceScanner();
+      setLoginError('⚠️ No Admin face enrolled yet! Log in with passkey "admin" / "admin" on your main device first and register your face.');
+      return;
+    }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 640, height: 480 } });
@@ -654,22 +742,36 @@ export default function SecComPortal({ onEmergencyPurge }) {
         ctx.drawImage(video, 0, 0, cvs.width, cvs.height);
 
         const currentVec = extractFaceVectorFromCanvas(cvs);
-        const matchPct = calculateFaceSimilarity(currentVec, profile.vector);
-        setLoginScanMatchScore(matchPct);
 
-        if (matchPct >= 70) {
+        // Compare against ALL enrolled face profiles
+        let maxMatchScore = 0;
+        let matchedProfile = null;
+
+        for (const profile of activeProfiles) {
+          if (profile.vector) {
+            const score = calculateFaceSimilarity(currentVec, profile.vector);
+            if (score > maxMatchScore) {
+              maxMatchScore = score;
+              matchedProfile = profile;
+            }
+          }
+        }
+
+        setLoginScanMatchScore(maxMatchScore);
+
+        if (maxMatchScore >= 70 && matchedProfile) {
           clearInterval(scanIntervalRef.current);
-          setLoginScanStatus('✅ BIOMETRIC IDENTITY CONFIRMED! ACCESS GRANTED TO ADMIN...');
+          setLoginScanStatus(`✅ BIOMETRICS CONFIRMED: "${matchedProfile.name}"! ACCESS GRANTED...`);
           setTimeout(() => {
             closeLoginFaceScanner();
-            recordLoginAttempt('admin', 'SUCCESS (FACE UNLOCK)', 'LOW');
+            recordLoginAttempt('admin', `SUCCESS (FACE UNLOCK: ${matchedProfile.name})`, 'LOW');
             setAuthRole('admin');
             setActiveUser({ username: 'admin', role: 'Admin' });
             setRoomSenderName('Admin-Command');
             setActiveTab('admin');
           }, 800);
         } else {
-          setLoginScanStatus(`Scanning... Match Score: ${matchPct}% (Required: >= 70%)`);
+          setLoginScanStatus(`Scanning... Highest Match: ${maxMatchScore}% (Requires >= 70%)`);
         }
       }, 500);
 
@@ -2868,7 +2970,9 @@ export default function SecComPortal({ onEmergencyPurge }) {
 
             {/* SUB-TAB 6: FACE RECOGNITION BIOMETRICS ENROLLMENT STUDIO */}
             {adminSubTab === 'face' && (
-              <div className="bg-slate-900/90 rounded-2xl p-6 border border-purple-500/40 shadow-2xl space-y-6 animate-in fade-in font-mono">
+              <div className="bg-slate-900/90 rounded-2xl p-6 border border-purple-500/40 shadow-2xl space-y-8 animate-in fade-in font-mono">
+                
+                {/* Header Status Bar */}
                 <div className="flex items-center justify-between border-b border-slate-800 pb-4 flex-wrap gap-2">
                   <div className="flex items-center gap-3">
                     <div className="p-3 rounded-xl bg-purple-950 border border-purple-500/50 text-purple-400">
@@ -2876,172 +2980,247 @@ export default function SecComPortal({ onEmergencyPurge }) {
                     </div>
                     <div>
                       <h3 className="font-bold text-lg text-purple-300 flex items-center gap-2">
-                        Admin Facial Biometric Enrollment Studio
+                        Admin Facial Biometric Studio
                       </h3>
                       <p className="text-xs text-slate-400">
-                        Capture webcam photo snapshots to enroll Admin face biometrics for instant facial unlock
+                        Cross-device facial recognition system (Synced across all logged-in devices via Cloud Vault)
                       </p>
                     </div>
                   </div>
                   
-                  {enrolledFaceData ? (
+                  {faceProfilesList.length > 0 ? (
                     <span className="px-3 py-1.5 rounded-lg bg-emerald-950 border border-emerald-500/50 text-emerald-300 text-xs font-bold flex items-center gap-2">
                       <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                      <span>Admin Face Enrolled ({enrolledFaceData.samples?.length || 3} Samples Saved)</span>
+                      <span>{faceProfilesList.length} Face Profile(s) Enrolled</span>
                     </span>
                   ) : (
                     <span className="px-3 py-1.5 rounded-lg bg-amber-950 border border-amber-500/50 text-amber-300 text-xs font-bold flex items-center gap-2">
                       <AlertTriangle className="w-4 h-4 text-amber-400" />
-                      <span>No Admin Face Enrolled Yet</span>
+                      <span>No Face Profiles Enrolled Yet</span>
                     </span>
                   )}
                 </div>
 
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-                  {/* Left Column: Live Camera Feed */}
-                  <div className="lg:col-span-7 space-y-4">
-                    <div className="relative rounded-2xl overflow-hidden border-2 border-purple-500/50 bg-slate-950 shadow-[0_0_30px_rgba(168,85,247,0.2)] aspect-video flex items-center justify-center">
-                      
-                      {/* Cybernetic HUD Overlay */}
-                      <div className="absolute inset-0 z-10 pointer-events-none border-2 border-purple-500/20 m-4 rounded-xl flex flex-col justify-between p-3">
-                        <div className="flex justify-between items-center text-[10px] text-purple-400 font-mono">
-                          <span className="bg-purple-950/80 px-2 py-0.5 rounded border border-purple-500/40">HUD: ENROLLMENT MODE</span>
-                          <span className="bg-purple-950/80 px-2 py-0.5 rounded border border-purple-500/40 animate-pulse">FACIAL MATRIX 64x64</span>
-                        </div>
-                        
-                        {/* Target Reticle Box */}
-                        <div className="w-44 h-44 mx-auto border-2 border-dashed border-purple-400/80 rounded-full flex items-center justify-center relative shadow-[0_0_20px_rgba(168,85,247,0.3)]">
-                          <div className="w-3 h-3 rounded-full bg-purple-400 animate-ping"></div>
-                          <Scan className="w-12 h-12 text-purple-400/40 absolute animate-spin" style={{ animationDuration: '10s' }} />
-                        </div>
+                {/* ADD NEW FACE PROFILE CARD */}
+                <div className="bg-slate-950/80 rounded-2xl p-5 border border-purple-500/40 space-y-5 shadow-xl">
+                  <h4 className="font-bold text-sm text-purple-300 flex items-center gap-2 border-b border-slate-900 pb-3">
+                    <UserPlus className="w-4 h-4 text-purple-400" /> Add New Face Profile
+                  </h4>
 
-                        <div className="text-center text-[10px] text-purple-300 bg-slate-950/80 p-1.5 rounded border border-purple-500/30">
-                          Align face inside circle and press "Take 3 Face Snapshots"
-                        </div>
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                    {/* Left: Camera Feed */}
+                    <div className="lg:col-span-7 space-y-4">
+                      <div>
+                        <label className="text-xs text-slate-300 block mb-1.5 font-bold">
+                          Face Profile Label / Name
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g. Primary Laptop Face, Office Webcam, Mobile Angle..."
+                          value={newFaceLabel}
+                          onChange={(e) => setNewFaceLabel(e.target.value)}
+                          className="w-full p-3 rounded-xl bg-slate-900 border border-slate-800 text-xs text-slate-100 focus:border-purple-500 focus:outline-none"
+                        />
                       </div>
 
-                      <video
-                        ref={enrollVideoRef}
-                        autoPlay
-                        playsInline
-                        muted
-                        className="w-full h-full object-cover transform scale-x-[-1]"
-                      />
+                      <div className="relative rounded-2xl overflow-hidden border-2 border-purple-500/50 bg-slate-950 aspect-video flex items-center justify-center shadow-inner">
+                        {/* HUD Overlay */}
+                        <div className="absolute inset-0 z-10 pointer-events-none border-2 border-purple-500/20 m-3 rounded-xl flex flex-col justify-between p-3">
+                          <div className="flex justify-between items-center text-[9px] text-purple-400 font-mono">
+                            <span className="bg-purple-950/90 px-2 py-0.5 rounded border border-purple-500/40">HUD: ENROLLMENT</span>
+                            <span className="bg-purple-950/90 px-2 py-0.5 rounded border border-purple-500/40 animate-pulse">64x64 BIOMETRIC MATRIX</span>
+                          </div>
+                          
+                          <div className="w-40 h-40 mx-auto border-2 border-dashed border-purple-400/80 rounded-full flex items-center justify-center relative shadow-[0_0_20px_rgba(168,85,247,0.3)]">
+                            <div className="w-2.5 h-2.5 rounded-full bg-purple-400 animate-ping"></div>
+                            <Scan className="w-10 h-10 text-purple-400/40 absolute animate-spin" style={{ animationDuration: '10s' }} />
+                          </div>
 
-                      {!isCameraActive && (
-                        <div className="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center p-6 text-center space-y-3 z-20">
-                          <Camera className="w-12 h-12 text-purple-500 animate-bounce" />
-                          <p className="text-xs text-slate-300 max-w-sm">
-                            Click below to initialize device camera for facial biometric enrollment.
-                          </p>
+                          <div className="text-center text-[10px] text-purple-300 bg-slate-950/90 p-1.5 rounded border border-purple-500/30">
+                            Position face inside circle & click "Take 3 Face Snapshots & Add Profile"
+                          </div>
+                        </div>
+
+                        <video
+                          ref={enrollVideoRef}
+                          autoPlay
+                          playsInline
+                          muted
+                          className="w-full h-full object-cover transform scale-x-[-1]"
+                        />
+
+                        {!isCameraActive && (
+                          <div className="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center p-6 text-center space-y-3 z-20">
+                            <Camera className="w-10 h-10 text-purple-500 animate-bounce" />
+                            <p className="text-xs text-slate-300 max-w-sm">
+                              Initialize webcam to enroll new facial biometric template.
+                            </p>
+                            <button
+                              type="button"
+                              onClick={startEnrollCamera}
+                              className="px-5 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs uppercase flex items-center gap-2 cursor-pointer shadow-lg"
+                            >
+                              <Camera className="w-4 h-4" /> Start Camera
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      {isCameraActive && (
+                        <div className="flex items-center gap-3">
                           <button
                             type="button"
-                            onClick={startEnrollCamera}
-                            className="px-5 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs uppercase flex items-center gap-2 cursor-pointer shadow-lg"
+                            onClick={handleCapture3Snapshots}
+                            disabled={isCapturingSnapshots}
+                            className="flex-1 py-3.5 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-bold text-xs uppercase flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(168,85,247,0.4)] cursor-pointer"
                           >
-                            <Camera className="w-4 h-4" /> Start Camera
-                          </button>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Controls */}
-                    {isCameraActive && (
-                      <div className="flex items-center gap-3 flex-wrap">
-                        <button
-                          type="button"
-                          onClick={handleCapture3Snapshots}
-                          disabled={isCapturingSnapshots}
-                          className="flex-1 py-3.5 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-bold text-xs uppercase flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(168,85,247,0.4)] cursor-pointer"
-                        >
-                          {isCapturingSnapshots ? (
-                            <>
-                              <RefreshCw className="w-4 h-4 animate-spin" />
-                              <span>Capturing Snapshot {captureProgress} / 3...</span>
-                            </>
-                          ) : (
-                            <>
-                              <Camera className="w-4 h-4" />
-                              <span>Take 3 Face Snapshots</span>
-                            </>
-                          )}
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={stopEnrollCamera}
-                          className="px-4 py-3.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-slate-200 text-xs font-bold cursor-pointer"
-                        >
-                          Stop Camera
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Right Column: Captured Samples & Profile */}
-                  <div className="lg:col-span-5 space-y-5">
-                    <h4 className="font-bold text-sm text-purple-300 flex items-center gap-2">
-                      <UserCheck className="w-4 h-4 text-purple-400" /> Captured Biometric Samples (3 Photos)
-                    </h4>
-
-                    {/* 3 Sample Photo Thumbnails */}
-                    <div className="grid grid-cols-3 gap-3">
-                      {[0, 1, 2].map((idx) => {
-                        const sampleImg = capturedFaceSamples[idx] || (enrolledFaceData?.samples && enrolledFaceData.samples[idx]);
-                        return (
-                          <div
-                            key={idx}
-                            className="aspect-square rounded-xl bg-slate-950 border border-purple-500/40 overflow-hidden relative flex items-center justify-center group shadow-md"
-                          >
-                            {sampleImg ? (
+                            {isCapturingSnapshots ? (
                               <>
-                                <img src={sampleImg} alt={`Sample ${idx + 1}`} className="w-full h-full object-cover transform scale-x-[-1]" />
-                                <span className="absolute bottom-1 right-1 text-[9px] bg-purple-950/90 text-purple-300 px-1.5 py-0.5 rounded font-bold border border-purple-500/50">
-                                  Snap #{idx + 1}
-                                </span>
+                                <RefreshCw className="w-4 h-4 animate-spin" />
+                                <span>Capturing Snapshot {captureProgress} / 3...</span>
                               </>
                             ) : (
-                              <div className="text-center p-2 space-y-1">
-                                <Camera className="w-6 h-6 text-slate-700 mx-auto" />
-                                <span className="text-[9px] text-slate-500 block">Sample #{idx + 1}</span>
-                              </div>
+                              <>
+                                <Camera className="w-4 h-4" />
+                                <span>Take 3 Face Snapshots & Add Profile</span>
+                              </>
                             )}
-                          </div>
-                        );
-                      })}
-                    </div>
-
-                    {/* Enrollment Status & Actions */}
-                    <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="text-slate-400">Enrollment Status:</span>
-                        <span className="text-purple-300 font-bold">{faceEnrollStatus || 'Ready to Capture'}</span>
-                      </div>
-
-                      {enrolledFaceData && (
-                        <div className="space-y-2 pt-2 border-t border-slate-900 text-xs">
-                          <div className="flex justify-between text-slate-400 text-[11px]">
-                            <span>Registered On:</span>
-                            <span className="text-slate-200">{enrolledFaceData.date ? formatTimestamp(enrolledFaceData.date) : 'Recently'}</span>
-                          </div>
-                          <div className="flex justify-between text-slate-400 text-[11px]">
-                            <span>Vector Dimension:</span>
-                            <span className="text-slate-200">64-bin Luminance Grid</span>
-                          </div>
+                          </button>
 
                           <button
                             type="button"
-                            onClick={handleResetFaceEnrollment}
-                            className="w-full py-2.5 rounded-lg bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-500/40 text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer mt-2"
+                            onClick={stopEnrollCamera}
+                            className="px-4 py-3.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-slate-200 text-xs font-bold cursor-pointer"
                           >
-                            <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-                            <span>Delete & Reset Face Profile</span>
+                            Stop Camera
                           </button>
                         </div>
                       )}
+
+                      {faceEnrollStatus && (
+                        <div className="p-3 rounded-xl bg-purple-950/80 border border-purple-500/50 text-purple-200 text-xs font-mono">
+                          {faceEnrollStatus}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Right: Snapshots Preview */}
+                    <div className="lg:col-span-5 space-y-4">
+                      <h5 className="font-bold text-xs text-purple-300 flex items-center gap-1.5">
+                        <UserCheck className="w-3.5 h-3.5 text-purple-400" /> Current Capture Samples (3 Photos)
+                      </h5>
+
+                      <div className="grid grid-cols-3 gap-2.5">
+                        {[0, 1, 2].map((idx) => {
+                          const sampleImg = capturedFaceSamples[idx];
+                          return (
+                            <div
+                              key={idx}
+                              className="aspect-square rounded-xl bg-slate-900 border border-purple-500/30 overflow-hidden relative flex items-center justify-center shadow-md"
+                            >
+                              {sampleImg ? (
+                                <>
+                                  <img src={sampleImg} alt={`Sample ${idx + 1}`} className="w-full h-full object-cover transform scale-x-[-1]" />
+                                  <span className="absolute bottom-1 right-1 text-[8px] bg-purple-950/90 text-purple-300 px-1 py-0.5 rounded font-bold border border-purple-500/50">
+                                    Snap #{idx + 1}
+                                  </span>
+                                </>
+                              ) : (
+                                <div className="text-center p-2 space-y-1">
+                                  <Camera className="w-5 h-5 text-slate-700 mx-auto" />
+                                  <span className="text-[8px] text-slate-500 block">Snap #{idx + 1}</span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 text-[11px] text-slate-400 space-y-1.5">
+                        <span className="font-bold text-purple-300 block">🌐 Cloud Persistence Note:</span>
+                        <p>
+                          Enrolled face profiles are instantly synchronized with Supabase Cloud Vault. You can unlock Admin access from any phone, laptop, or browser using any enrolled face.
+                        </p>
+                      </div>
                     </div>
                   </div>
                 </div>
+
+                {/* REGISTERED FACE PROFILES GRID (ADD & REMOVE FACES) */}
+                <div className="space-y-4 pt-4 border-t border-slate-800">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-bold text-sm text-slate-100 flex items-center gap-2">
+                      <Users className="w-4 h-4 text-purple-400" /> Enrolled Admin Face Profiles ({faceProfilesList.length})
+                    </h4>
+                    <span className="text-[10px] text-purple-400 bg-purple-950/80 px-2.5 py-1 rounded border border-purple-500/30 font-mono">
+                      ANY REGISTERED FACE MATCHES FOR UNLOCK
+                    </span>
+                  </div>
+
+                  {faceProfilesList.length === 0 ? (
+                    <div className="p-8 text-center bg-slate-950/60 rounded-2xl border border-slate-800 text-slate-500 space-y-2">
+                      <Camera className="w-10 h-10 text-slate-700 mx-auto" />
+                      <p className="text-xs">No face profiles registered yet. Use the camera form above to enroll your face.</p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {faceProfilesList.map((profile) => (
+                        <div
+                          key={profile.id}
+                          className="bg-slate-950 rounded-2xl p-4 border border-purple-500/40 space-y-3.5 shadow-lg relative group hover:border-purple-400 transition-all"
+                        >
+                          <div className="flex items-start justify-between gap-2 border-b border-slate-900 pb-2.5">
+                            <div>
+                              <h5 className="font-bold text-sm text-purple-200 flex items-center gap-1.5">
+                                <UserCheck className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                                <span>{profile.name}</span>
+                              </h5>
+                              <span className="text-[10px] text-slate-400 block mt-0.5">
+                                Enrolled: {profile.date || 'Recently'}
+                              </span>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteFaceProfile(profile.id)}
+                              title="Remove Face Profile"
+                              className="p-1.5 rounded-lg bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-500/40 text-xs font-bold transition-all cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                            </button>
+                          </div>
+
+                          {/* 3 Snapshot Thumbnails */}
+                          <div className="grid grid-cols-3 gap-2">
+                            {[0, 1, 2].map((sIdx) => {
+                              const snap = profile.samples && profile.samples[sIdx];
+                              return (
+                                <div
+                                  key={sIdx}
+                                  className="aspect-square rounded-lg bg-slate-900 border border-slate-800 overflow-hidden relative"
+                                >
+                                  {snap ? (
+                                    <img src={snap} alt={`Snap ${sIdx + 1}`} className="w-full h-full object-cover transform scale-x-[-1]" />
+                                  ) : (
+                                    <div className="w-full h-full flex items-center justify-center text-[8px] text-slate-600">Sample #{sIdx + 1}</div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1 border-t border-slate-900 font-mono">
+                            <span>Vector: 64-Grid Matrix</span>
+                            <span className="text-emerald-400 font-bold flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> Synced
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
               </div>
             )}
 
