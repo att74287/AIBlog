@@ -48,8 +48,7 @@ export default function WomanFaceCanvas({ onMoleClick }) {
       {/* INVISIBLE LEFT EYE HOTSPOT (Click 3 times to unlock) */}
       <div
         onClick={handleLeftEyeClick}
-        className="absolute top-[28%] left-[26%] w-[18%] h-[9%] rounded-full cursor-pointer z-20"
-        title="AI Vision Model Area"
+        className="absolute top-[28%] left-[26%] w-[18%] h-[9%] rounded-full cursor-default z-20"
       />
 
       {/* INVISIBLE MOLE HOTSPOT (Left side below lower lip - Click 1 time to unlock) */}
@@ -60,8 +59,7 @@ export default function WomanFaceCanvas({ onMoleClick }) {
           onMoleClick();
         }}
         style={{ top: '51.8%', left: '42.8%' }}
-        className="absolute w-6 h-6 -ml-3 -mt-3 cursor-pointer z-30 rounded-full"
-        title="Biometric Target"
+        className="absolute w-6 h-6 -ml-3 -mt-3 cursor-default z-30 rounded-full"
       />
     </div>
   );

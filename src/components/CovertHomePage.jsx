@@ -178,6 +178,7 @@ export default function CovertHomePage({ onUnlockPortal }) {
 
       {/* FOOTER - Purely Informational, No Links */}
       <footer className="bg-[#1c1917] text-[#e7d8c9] py-8 px-6 border-t border-[#38322e] text-center text-xs space-y-2 font-mono">
+        <p className="text-[#d4af37] font-semibold text-sm">Author: Kiransai P</p>
         <p>AIBlog • Educational Overview of Artificial Intelligence</p>
         <p className="text-[#786b5e]">© {new Date().getFullYear()} AIBlog Foundation. All Rights Reserved.</p>
       </footer>

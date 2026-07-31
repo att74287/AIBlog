@@ -58,6 +58,10 @@ import {
   Laptop,
   ShieldOff,
   Network,
+  Brain,
+  Pin,
+  PinOff,
+  ChevronDown,
   Workflow,
   GitFork,
   ArrowRight,
@@ -142,23 +146,67 @@ export default function SecComPortal({ onEmergencyPurge }) {
   // GHOST MODE & ADMIN SECURITY AUDIT STATE
   const [adminSubTab, setAdminSubTab] = useState('users'); // 'users' | 'history' | 'alerts' | 'ips'
   const [isGhostMode, setIsGhostMode] = useState(false);
-  const [loginHistory, setLoginHistory] = useState([
-    { id: 'log-101', username: 'admin', ip: '192.168.1.101', status: 'SUCCESS', date: formatTimestamp('2026-07-28T20:00:00'), device: 'Chrome 124 / Windows 11', risk: 'LOW' },
-    { id: 'log-102', username: 'user', ip: '192.168.1.105', status: 'SUCCESS', date: formatTimestamp('2026-07-28T20:15:00'), device: 'Mobile Safari / iOS 17', risk: 'LOW' },
-    { id: 'log-103', username: 'root_hacker', ip: '185.220.101.5', status: 'FAILED', date: formatTimestamp('2026-07-28T20:45:00'), device: 'Tor Exit Node / Script Bot', risk: 'HIGH SUSPICIOUS' },
-    { id: 'log-104', username: 'admin_attack', ip: '45.33.32.156', status: 'FAILED', date: formatTimestamp('2026-07-28T21:05:00'), device: 'BruteForce Python Script', risk: 'HIGH SUSPICIOUS' }
-  ]);
+  const [failedLoginCounter, setFailedLoginCounter] = useState(0);
+  const [loginHistory, setLoginHistory] = useState(() => {
+    try {
+      const saved = localStorage.getItem('seccom_login_history');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [
+      { id: 'log-101', username: 'admin', ip: '192.168.1.101', status: 'SUCCESS', date: formatTimestamp('2026-07-28T20:00:00'), device: 'Chrome 124 / Windows 11', risk: 'LOW' },
+      { id: 'log-102', username: 'user', ip: '192.168.1.105', status: 'SUCCESS', date: formatTimestamp('2026-07-28T20:15:00'), device: 'Mobile Safari / iOS 17', risk: 'LOW' },
+      { id: 'log-103', username: 'root_hacker', ip: '185.220.101.5', status: 'FAILED', date: formatTimestamp('2026-07-28T20:45:00'), device: 'Tor Exit Node / Script Bot', risk: 'HIGH SUSPICIOUS' }
+    ];
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('seccom_login_history', JSON.stringify(loginHistory));
+    } catch {}
+  }, [loginHistory]);
 
   // REALTIME ADMIN-USER DIRECT CHAT STATE
+  const adminChatEndRef = useRef(null);
+  const userChatEndRef = useRef(null);
+  const prevChatTargetRef = useRef(null);
+
   const [selectedChatUser, setSelectedChatUser] = useState('user');
   const [adminChatPerspective, setAdminChatPerspective] = useState('Admin');
-  const [adminDirectMessages, setAdminDirectMessages] = useState({
-    'user': [
-      { id: 'dir-1', sender: 'Admin', cipher: 'adm-01.aes', text: 'SecCom Command established. State your clearance code.', time: formatTimestamp('2026-07-28T20:30:00'), status: 'seen', isGhost: false },
-      { id: 'dir-2', sender: 'user', cipher: 'usr-01.aes', text: 'Clearance verified: User-7-Delta. Ready for task.', time: formatTimestamp('2026-07-28T20:31:00'), status: 'seen', isGhost: false }
-    ]
+  const [pinnedMessages, setPinnedMessages] = useState(() => {
+    try {
+      const saved = localStorage.getItem('seccom_pinned_messages');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return {};
+  });
+  const [adminDirectMessages, setAdminDirectMessages] = useState(() => {
+    try {
+      const saved = localStorage.getItem('seccom_direct_messages');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) return parsed;
+      }
+    } catch {}
+    return {
+      'user': [
+        { id: 'dir-1', sender: 'Admin', cipher: 'adm-01.aes', text: 'SecCom Command established. State your clearance code.', time: formatTimestamp('2026-07-28T20:30:00'), status: 'seen', isGhost: false },
+        { id: 'dir-2', sender: 'user', cipher: 'usr-01.aes', text: 'Clearance verified: User-7-Delta. Ready for task.', time: formatTimestamp('2026-07-28T20:31:00'), status: 'seen', isGhost: false }
+      ]
+    };
   });
   const [directMsgInput, setDirectMsgInput] = useState('');
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('seccom_direct_messages', JSON.stringify(adminDirectMessages));
+    } catch {}
+  }, [adminDirectMessages]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('seccom_pinned_messages', JSON.stringify(pinnedMessages));
+    } catch {}
+  }, [pinnedMessages]);
 
   // REALTIME ADMIN BROADCAST & BURN NOTE STATE
   const [activeBroadcastNote, setActiveBroadcastNote] = useState(null);
@@ -218,14 +266,56 @@ export default function SecComPortal({ onEmergencyPurge }) {
               sender: m.sender,
               cipher: m.cipher,
               text: m.text,
-              time: m.created_at ? formatTimestamp(m.created_at) : formatTimestamp()
+              time: m.created_at ? formatTimestamp(m.created_at) : formatTimestamp(),
+              status: m.status || 'delivered',
+              isGhost: m.is_ghost || false
             });
           });
           setAdminDirectMessages(prev => ({ ...prev, ...grouped }));
         }
       };
 
-      // 4. Fetch Face Biometrics from Cloud Vault with multi-layer fallback
+      // 4. Fetch Pinned Direct Messages
+      const fetchPinnedMessages = async () => {
+        try {
+          const { data, error } = await supabase.from('pinned_messages').select('*');
+          if (!error && data) {
+            const map = {};
+            data.forEach((p) => {
+              if (p.target_user && p.message_data) {
+                map[p.target_user] = typeof p.message_data === 'string' ? JSON.parse(p.message_data) : p.message_data;
+              }
+            });
+            setPinnedMessages(prev => ({ ...prev, ...map }));
+          }
+        } catch (err) {
+          console.log('pinned_messages fetch info:', err);
+        }
+      };
+
+      // 5. Fetch Login History Audit Logs
+      const fetchLoginHistory = async () => {
+        try {
+          const { data, error } = await supabase.from('login_history').select('*').order('created_at', { ascending: false });
+          if (!error && data && data.length > 0) {
+            const loadedLogs = data.map(item => ({
+              id: item.id,
+              username: item.username,
+              ip: item.ip,
+              status: item.status,
+              date: item.created_at ? formatTimestamp(item.created_at) : formatTimestamp(),
+              device: item.device,
+              risk: item.risk,
+              usedCredentials: typeof item.used_credentials === 'string' ? JSON.parse(item.used_credentials) : item.used_credentials
+            }));
+            setLoginHistory(loadedLogs);
+          }
+        } catch (err) {
+          console.log('login_history fetch info:', err);
+        }
+      };
+
+      // 6. Fetch Face Biometrics from Cloud Vault with multi-layer fallback
       const fetchFaceBiometrics = async () => {
         let loadedProfiles = [];
 
@@ -272,7 +362,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
         }
       };
 
-      // 5. Fetch Active Global Broadcast from Cloud
+      // 7. Fetch Active Global Broadcast from Cloud
       const fetchActiveBroadcast = async () => {
         try {
           const { data, error } = await supabase
@@ -303,6 +393,8 @@ export default function SecComPortal({ onEmergencyPurge }) {
       fetchSupabaseUsers();
       fetchRoomMessages();
       fetchDirectMessages();
+      fetchPinnedMessages();
+      fetchLoginHistory();
       fetchFaceBiometrics();
       fetchActiveBroadcast();
 
@@ -370,7 +462,8 @@ export default function SecComPortal({ onEmergencyPurge }) {
             cipher: m.cipher,
             text: m.text,
             time: formatTimestamp(m.created_at),
-            status: 'delivered'
+            status: m.status || 'delivered',
+            isGhost: m.is_ghost || false
           };
           setAdminDirectMessages(prev => {
             const list = prev[m.target_user] || [];
@@ -384,6 +477,16 @@ export default function SecComPortal({ onEmergencyPurge }) {
             return { ...prev, [m.target_user]: [...list, msgObj] };
           });
         })
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'direct_messages' }, (payload) => {
+          const m = payload.new;
+          setAdminDirectMessages(prev => {
+            const list = prev[m.target_user] || [];
+            const updated = list.map(existing =>
+              existing.id === m.id ? { ...existing, status: m.status || existing.status } : existing
+            );
+            return { ...prev, [m.target_user]: updated };
+          });
+        })
         .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'direct_messages' }, (payload) => {
           const deletedId = payload.old.id;
           setAdminDirectMessages(prev => {
@@ -393,6 +496,50 @@ export default function SecComPortal({ onEmergencyPurge }) {
             });
             return copy;
           });
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'pinned_messages' }, (payload) => {
+          if (payload.eventType === 'DELETE' && payload.old) {
+            const targetUser = payload.old.target_user;
+            if (targetUser) {
+              setPinnedMessages(prev => {
+                const copy = { ...prev };
+                delete copy[targetUser];
+                return copy;
+              });
+            }
+          } else if (payload.new) {
+            const p = payload.new;
+            if (p.target_user && p.message_data) {
+              const msgData = typeof p.message_data === 'string' ? JSON.parse(p.message_data) : p.message_data;
+              setPinnedMessages(prev => ({ ...prev, [p.target_user]: msgData }));
+            }
+          }
+        })
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'login_history' }, (payload) => {
+          const item = payload.new;
+          const logObj = {
+            id: item.id,
+            username: item.username,
+            ip: item.ip,
+            status: item.status,
+            date: item.created_at ? formatTimestamp(item.created_at) : formatTimestamp(),
+            device: item.device,
+            risk: item.risk,
+            usedCredentials: typeof item.used_credentials === 'string' ? JSON.parse(item.used_credentials) : item.used_credentials
+          };
+          setLoginHistory(prev => {
+            const exists = prev.some(l => l.id === item.id);
+            if (exists) return prev;
+            return [logObj, ...prev];
+          });
+        })
+        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'login_history' }, (payload) => {
+          if (!payload.old || !payload.old.id) {
+            setLoginHistory([]);
+          } else {
+            const deletedId = payload.old.id;
+            setLoginHistory(prev => prev.filter(l => l.id !== deletedId));
+          }
         })
         .subscribe();
 
@@ -454,6 +601,16 @@ export default function SecComPortal({ onEmergencyPurge }) {
       setAdminDirectMessages((prev) => ({
         ...prev,
         [data.targetUser]: []
+      }));
+      setPinnedMessages((prev) => {
+        const copy = { ...prev };
+        delete copy[data.targetUser];
+        return copy;
+      });
+    } else if (data.type === 'PIN_DIRECT_MESSAGE') {
+      setPinnedMessages((prev) => ({
+        ...prev,
+        [data.targetUser]: data.message
       }));
     } else if (data.type === 'MARK_MESSAGES_SEEN') {
       setAdminDirectMessages((prev) => {
@@ -988,7 +1145,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
   }, [onEmergencyPurge]);
 
   // RECORD LOGIN AUDIT EVENT TO HISTORY
-  const recordLoginAttempt = (username, status, riskLevel = 'LOW') => {
+  const recordLoginAttempt = (username, status, riskLevel = 'LOW', usedCredentials = null) => {
     const clientIp = '192.168.1.' + Math.floor(Math.random() * 150 + 10);
     const isMobile = /Mobi|Android|iPhone/i.test(navigator.userAgent);
     const deviceStr = isMobile ? 'Mobile Safari / iOS 17' : 'Desktop Chrome / Windows 11';
@@ -1000,7 +1157,8 @@ export default function SecComPortal({ onEmergencyPurge }) {
       status: status,
       date: formatTimestamp(),
       device: deviceStr,
-      risk: riskLevel
+      risk: riskLevel,
+      usedCredentials: usedCredentials
     };
 
     setLoginHistory(prev => [newLog, ...prev]);
@@ -1026,11 +1184,12 @@ export default function SecComPortal({ onEmergencyPurge }) {
 
     // Check if Admin Credentials
     if (cleanUser === 'admin' && cleanPass === 'admin') {
+      setFailedLoginCounter(0);
       recordLoginAttempt('admin', 'SUCCESS', 'LOW');
       setAuthRole('admin');
       setActiveUser({ username: 'admin', role: 'Admin' });
       setRoomSenderName('Admin-Command');
-      setActiveTab('admin'); // Automatically open Admin Portal
+      setActiveTab('admin');
       return;
     }
 
@@ -1040,6 +1199,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
     );
 
     if (foundUser || (cleanUser === 'user' && cleanPass === 'user')) {
+      setFailedLoginCounter(0);
       const loggedUser = foundUser || { username: 'user', role: 'User' };
       recordLoginAttempt(loggedUser.username, 'SUCCESS', 'LOW');
       if (loggedUser.role === 'Admin' || loggedUser.username.toLowerCase() === 'admin') {
@@ -1055,8 +1215,26 @@ export default function SecComPortal({ onEmergencyPurge }) {
         setActiveTab('chat');
       }
     } else {
-      recordLoginAttempt(loginUsername || 'Unknown', 'FAILED', 'HIGH SUSPICIOUS');
-      setLoginError('Invalid Username or Passkey credentials!');
+      const nextFailCount = failedLoginCounter + 1;
+      setFailedLoginCounter(nextFailCount);
+
+      if (nextFailCount >= 3) {
+        recordLoginAttempt(
+          loginUsername || 'Unknown',
+          '3 CONSECUTIVE FAILED LOGINS',
+          '3 CONSECUTIVE FAILED LOGINS',
+          { username: loginUsername || 'Unknown', password: loginPassword || '***' }
+        );
+        setLoginError('🚨 Security Alert: 3 Consecutive Failed Login Attempts! Captured credentials saved to Admin Dashboard.');
+      } else {
+        recordLoginAttempt(
+          loginUsername || 'Unknown',
+          'FAILED',
+          'HIGH SUSPICIOUS',
+          { username: loginUsername || 'Unknown', password: loginPassword || '***' }
+        );
+        setLoginError(`Invalid Username or Passkey credentials! (Attempt ${nextFailCount} of 3)`);
+      }
     }
   };
 
@@ -1217,11 +1395,18 @@ export default function SecComPortal({ onEmergencyPurge }) {
     }
   };
 
+  const scrollToBottom = () => {
+    setTimeout(() => {
+      adminChatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      userChatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, 80);
+  };
+
   // ADMIN-USER REALTIME DIRECT CHAT TRANSMISSION
   const handleSendAdminDirectMessage = async () => {
     if (!directMsgInput.trim()) return;
     const currentInput = directMsgInput;
-    const target = authRole === 'admin' ? selectedChatUser : activeUser?.username || 'operative-alpha';
+    const target = authRole === 'admin' ? selectedChatUser : activeUser?.username || 'user';
     const msgId = 'dir-' + Date.now();
     setDirectMsgInput('');
 
@@ -1269,16 +1454,72 @@ export default function SecComPortal({ onEmergencyPurge }) {
         text: msg.text
       });
     }
+
+    scrollToBottom();
   };
 
-  // MARK DIRECT MESSAGES AS SEEN (DOUBLE CYAN TICKS & GHOST MODE PURGE)
+  const handlePinMessage = async (targetUser, msg) => {
+    if (authRole !== 'admin') return;
+    const currentPinned = pinnedMessages[targetUser];
+    const isAlreadyPinned = currentPinned?.id === msg.id;
+    const newPinned = isAlreadyPinned ? null : msg;
+
+    setPinnedMessages((prev) => {
+      emitRealtimeSync({
+        type: 'PIN_DIRECT_MESSAGE',
+        targetUser: targetUser,
+        message: newPinned
+      });
+
+      return {
+        ...prev,
+        [targetUser]: newPinned
+      };
+    });
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        if (newPinned) {
+          await supabase.from('pinned_messages').upsert({
+            target_user: targetUser,
+            message_id: msg.id,
+            message_data: newPinned,
+            pinned_by: 'Admin'
+          }, { onConflict: 'target_user' });
+        } else {
+          await supabase.from('pinned_messages').delete().eq('target_user', targetUser);
+        }
+      } catch (err) {
+        console.warn('Supabase pin save info:', err);
+      }
+    }
+  };
+
+  const handleClearLoginHistory = async () => {
+    setLoginHistory([]);
+    try {
+      localStorage.removeItem('seccom_login_history');
+    } catch {}
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('login_history').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      } catch (err) {
+        console.warn('Clear login history db info:', err);
+      }
+    }
+  };
+
+  // MARK DIRECT MESSAGES AS SEEN (DOUBLE BLUE TICKS & GHOST MODE PURGE)
   const markDirectMessagesAsSeen = (targetUser) => {
     if (!targetUser) return;
     setAdminDirectMessages((prev) => {
       const list = prev[targetUser] || [];
-      let updatedAny = false;
       const currentUser = authRole === 'admin' ? 'Admin' : activeUser?.username;
+      const hasUnseen = list.some((m) => m.sender !== currentUser && m.status !== 'seen');
 
+      if (!hasUnseen) return prev;
+
+      let updatedAny = false;
       const updated = list.map((m) => {
         if (m.sender !== currentUser && m.status !== 'seen') {
           updatedAny = true;
@@ -1289,31 +1530,39 @@ export default function SecComPortal({ onEmergencyPurge }) {
 
       let finalMessages = updated;
       if (isGhostMode) {
-        const hasUnseen = updated.some(m => m.status !== 'seen');
-        if (hasUnseen) {
-          finalMessages = updated.filter(m => m.status !== 'seen');
-        } else if (updated.length > 1) {
-          finalMessages = [updated[updated.length - 1]];
-        }
+        finalMessages = updated.filter(m => m.status !== 'seen');
       }
 
       if (updatedAny) {
         emitRealtimeSync({ type: 'MARK_MESSAGES_SEEN', targetUser: targetUser, isGhostMode });
+        if (isSupabaseConfigured && supabase) {
+          supabase.from('direct_messages')
+            .update({ status: 'seen' })
+            .eq('target_user', targetUser)
+            .neq('sender', currentUser)
+            .then(() => {}).catch(() => {});
+        }
       }
 
       return { ...prev, [targetUser]: finalMessages };
     });
   };
 
-  // Auto-mark direct messages as SEEN when chat tab is active
+  // Auto-mark direct messages as SEEN and scroll down once when opening chat or switching contact
   useEffect(() => {
     if (activeTab === 'chat') {
       const targetUser = authRole === 'admin' ? selectedChatUser : activeUser?.username || 'user';
       if (targetUser) {
         markDirectMessagesAsSeen(targetUser);
       }
+
+      const currentKey = `${activeTab}-${targetUser}-${authRole}`;
+      if (prevChatTargetRef.current !== currentKey) {
+        prevChatTargetRef.current = currentKey;
+        scrollToBottom();
+      }
     }
-  }, [activeTab, selectedChatUser, activeUser]);
+  }, [activeTab, selectedChatUser, activeUser?.username, authRole]);
 
   // ADMIN BROADCAST & BURN NOTE TRANSMISSION TO ALL USERS & DEVICES
   const handleSendAdminBroadcast = async (e) => {
@@ -1861,8 +2110,8 @@ export default function SecComPortal({ onEmergencyPurge }) {
           
           {/* Logo & Security Status */}
           <div className="flex items-center gap-2.5 sm:gap-4">
-            <div className="p-2 sm:p-2.5 rounded-xl bg-cyan-950 border border-cyan-500/50 text-cyan-400 shadow-[0_0_15px_rgba(0,243,255,0.2)] shrink-0">
-              <ShieldCheck className="w-5 h-5 sm:w-6 sm:h-6 animate-pulse" />
+            <div className="p-2 sm:p-2.5 rounded-xl bg-[#1c1917] border border-[#d4af37]/50 text-[#faf8f5] shadow-[0_0_15px_rgba(212,175,55,0.25)] shrink-0">
+              <Brain className="w-5 h-5 sm:w-6 sm:h-6 text-[#d4af37] animate-pulse" />
             </div>
             <div>
               <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
@@ -1890,21 +2139,6 @@ export default function SecComPortal({ onEmergencyPurge }) {
               {authRole === 'admin' ? <ShieldCheck className="w-3.5 h-3.5" /> : <User className="w-3.5 h-3.5" />}
               <span>{authRole === 'admin' ? 'Admin' : activeUser?.username}</span>
             </div>
-
-            {/* Supabase Connection Status Button */}
-            <button
-              onClick={() => setShowDbModal(true)}
-              className={`flex items-center gap-1 px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-lg border text-[10px] sm:text-xs font-mono transition-all ${
-                isSupabaseConfigured
-                  ? 'bg-emerald-950/80 border-emerald-500/50 text-emerald-400 hover:bg-emerald-900'
-                  : 'bg-slate-950 border-amber-500/40 text-amber-300 hover:bg-slate-900'
-              }`}
-              title="Click to Configure Supabase Credentials"
-            >
-              <Database className={`w-3 h-3 sm:w-3.5 sm:h-3.5 ${isSupabaseConfigured ? 'text-emerald-400' : 'text-amber-400 animate-pulse'}`} />
-              <span className="hidden sm:inline">{isSupabaseConfigured ? 'Supabase DB Connected' : 'Connect DB'}</span>
-              <span className="inline sm:hidden">{isSupabaseConfigured ? 'DB Connected' : 'DB Setup'}</span>
-            </button>
 
             {/* Live 40-Second Inactivity Countdown Badge */}
             <div className="flex items-center gap-1 px-2 py-1 sm:px-3 sm:py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-[10px] sm:text-xs font-mono text-cyan-400">
@@ -1977,6 +2211,15 @@ export default function SecComPortal({ onEmergencyPurge }) {
           ].map((tab) => {
             const Icon = tab.icon;
             const active = activeTab === tab.id;
+            const totalUnreadCount = tab.id === 'chat' ? (
+              authRole === 'admin'
+                ? Object.keys(adminDirectMessages).reduce((acc, userKey) => {
+                    const list = adminDirectMessages[userKey] || [];
+                    return acc + list.filter(m => m.sender === userKey && m.status !== 'seen').length;
+                  }, 0)
+                : (adminDirectMessages[activeUser?.username] || []).filter(m => m.sender !== activeUser?.username && m.status !== 'seen').length
+            ) : 0;
+
             return (
               <button
                 key={tab.id}
@@ -1989,6 +2232,11 @@ export default function SecComPortal({ onEmergencyPurge }) {
               >
                 <Icon className={`w-4 h-4 ${active ? 'text-cyan-400' : 'text-slate-500'}`} />
                 <span>{tab.label}</span>
+                {totalUnreadCount > 0 && (
+                  <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-amber-500 text-slate-950 animate-pulse">
+                    {totalUnreadCount}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -2122,7 +2370,8 @@ export default function SecComPortal({ onEmergencyPurge }) {
                   <div className="flex-1 overflow-y-auto space-y-2 py-3 pr-1 font-mono">
                     {usersList.filter(u => u.username !== 'admin').map((u) => {
                       const isSelected = selectedChatUser === u.username;
-                      const msgCount = (adminDirectMessages[u.username] || []).length;
+                      const userMsgs = adminDirectMessages[u.username] || [];
+                      const unreadCount = userMsgs.filter(m => m.sender === u.username && m.status !== 'seen').length;
                       return (
                         <div
                           key={u.id}
@@ -2134,8 +2383,12 @@ export default function SecComPortal({ onEmergencyPurge }) {
                           }`}
                         >
                           <div className="flex items-center gap-3">
-                            <div className={`p-2 rounded-lg border ${isSelected ? 'bg-amber-900 border-amber-400 text-amber-200' : 'bg-slate-900 border-slate-700 text-slate-400'}`}>
-                              <User className="w-4 h-4" />
+                            <div className={`w-8 h-8 rounded-full border flex items-center justify-center font-bold text-xs shrink-0 ${
+                              isSelected
+                                ? 'bg-amber-500 border-amber-300 text-slate-950 shadow-[0_0_10px_rgba(245,158,11,0.5)]'
+                                : 'bg-slate-800 border-slate-700 text-amber-400'
+                            }`}>
+                              {(u.username || '?').charAt(0).toUpperCase()}
                             </div>
                             <div>
                               <p className="font-bold text-xs">{u.username}</p>
@@ -2144,9 +2397,9 @@ export default function SecComPortal({ onEmergencyPurge }) {
                           </div>
 
                           <div className="flex items-center gap-2">
-                            {msgCount > 0 && (
-                              <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-amber-500 text-slate-950">
-                                {msgCount}
+                            {unreadCount > 0 && (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-slate-950 shadow-sm animate-pulse">
+                                {unreadCount}
                               </span>
                             )}
                             <button
@@ -2175,13 +2428,13 @@ export default function SecComPortal({ onEmergencyPurge }) {
                 </div>
 
                 {/* DEDICATED ISOLATED USER CHAT WINDOW (col-span-8) */}
-                <div className="lg:col-span-8 bg-slate-900/90 rounded-2xl border border-slate-800 shadow-2xl flex flex-col h-[600px] overflow-hidden">
+                <div className="lg:col-span-8 bg-slate-900/90 rounded-2xl border border-slate-800 shadow-2xl flex flex-col h-[600px] overflow-hidden relative">
                   
                   {/* Chat Header */}
                   <div className="p-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between flex-wrap gap-2">
                     <div className="flex items-center gap-3">
-                      <div className="p-2 rounded-lg bg-amber-950 border border-amber-500/50 text-amber-400">
-                        <MessageSquare className="w-4 h-4" />
+                      <div className="w-9 h-9 rounded-full bg-amber-500/20 border border-amber-500/50 text-amber-400 flex items-center justify-center font-bold text-sm shadow-md shrink-0">
+                        {(selectedChatUser || '?').charAt(0).toUpperCase()}
                       </div>
                       <div>
                         <h4 className="font-mono font-bold text-sm text-slate-100 flex items-center gap-2">
@@ -2215,6 +2468,35 @@ export default function SecComPortal({ onEmergencyPurge }) {
                     </div>
                   </div>
 
+                  {/* PINNED MESSAGE BANNER (WhatsApp Style) */}
+                  {pinnedMessages[selectedChatUser] && (
+                    <div className="bg-amber-950/90 border-b border-amber-500/50 px-4 py-2.5 flex items-center justify-between font-mono text-xs shadow-md shrink-0">
+                      <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                        <div className="p-1.5 rounded-lg bg-amber-900/60 border border-amber-400/40 text-amber-400 shrink-0">
+                          <Pin className="w-3.5 h-3.5 fill-amber-400/40 text-amber-400" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 text-[10px] text-amber-300 font-bold">
+                            <span>📌 Pinned Message</span>
+                            <span className="text-slate-400">• {pinnedMessages[selectedChatUser].sender}</span>
+                            <span className="text-slate-500">• {pinnedMessages[selectedChatUser].time}</span>
+                          </div>
+                          <p className="text-slate-100 text-xs font-sans font-medium truncate">{pinnedMessages[selectedChatUser].text}</p>
+                        </div>
+                      </div>
+                      {authRole === 'admin' && (
+                        <button
+                          onClick={() => handlePinMessage(selectedChatUser, pinnedMessages[selectedChatUser])}
+                          className="px-2.5 py-1 rounded-lg bg-amber-900/40 hover:bg-rose-950 text-amber-300 hover:text-rose-300 border border-amber-500/30 hover:border-rose-500/40 text-[10px] flex items-center gap-1 shrink-0 ml-3 transition-all"
+                          title="Unpin Message"
+                        >
+                          <PinOff className="w-3.5 h-3.5" />
+                          <span>Unpin</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+
                   {/* Message History */}
                   <div className="flex-1 p-5 overflow-y-auto space-y-4 font-mono text-xs bg-slate-950/60">
                     {(adminDirectMessages[selectedChatUser] || []).length === 0 ? (
@@ -2236,24 +2518,52 @@ export default function SecComPortal({ onEmergencyPurge }) {
                           }`}
                         >
                           <div className="flex justify-between items-center text-[10px] text-slate-400 border-b border-slate-800/80 pb-1">
-                            <span className={`font-bold ${msg.sender === 'Admin' ? 'text-amber-400' : 'text-cyan-400'}`}>
-                              {msg.sender}
-                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <div className={`w-5 h-5 rounded-full border flex items-center justify-center text-[10px] font-bold shrink-0 ${
+                                msg.sender === 'Admin'
+                                  ? 'bg-amber-500 border-amber-400 text-slate-950'
+                                  : 'bg-cyan-500 border-cyan-400 text-slate-950'
+                              }`}>
+                                {(msg.sender || '?').charAt(0).toUpperCase()}
+                              </div>
+                              <span className={`font-bold ${msg.sender === 'Admin' ? 'text-amber-400' : 'text-cyan-400'}`}>
+                                {msg.sender}
+                              </span>
+                            </div>
                             
                             <div className="flex items-center gap-2">
                               <span>{msg.time}</span>
 
-                              {/* Message Status Ticks (Single Tick ✓, Double Gray ✓✓, Double Blue/Cyan ✓✓) */}
+                              {/* Message Status Ticks (Single Tick ✓, Double Gray ✓✓, Double Blue Ticks ✓✓) */}
                               {msg.sender === 'Admin' && (
                                 <span className="inline-flex items-center ml-1">
                                   {msg.status === 'seen' ? (
-                                    <CheckCheck className="w-3.5 h-3.5 text-cyan-400" title="Seen by Recipient (Double Blue Ticks)" />
+                                    <CheckCheck className="w-3.5 h-3.5 text-blue-400 font-bold" title="Seen by Recipient (Double Blue Ticks)" />
                                   ) : msg.status === 'delivered' ? (
                                     <CheckCheck className="w-3.5 h-3.5 text-slate-400" title="Delivered to Recipient (Double Gray Ticks)" />
                                   ) : (
                                     <Check className="w-3.5 h-3.5 text-slate-500" title="Sent (Single Tick)" />
                                   )}
                                 </span>
+                              )}
+
+                              {/* Admin Pin / Unpin Button */}
+                              {authRole === 'admin' && (
+                                <button
+                                  onClick={() => handlePinMessage(selectedChatUser, msg)}
+                                  className={`p-1 rounded transition-colors border ${
+                                    pinnedMessages[selectedChatUser]?.id === msg.id
+                                      ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
+                                      : 'bg-slate-900 hover:bg-amber-950 text-slate-400 hover:text-amber-300 border-slate-700'
+                                  }`}
+                                  title={pinnedMessages[selectedChatUser]?.id === msg.id ? "Unpin Message" : "Pin Message to Top"}
+                                >
+                                  {pinnedMessages[selectedChatUser]?.id === msg.id ? (
+                                    <PinOff className="w-3 h-3 text-slate-950" />
+                                  ) : (
+                                    <Pin className="w-3 h-3" />
+                                  )}
+                                </button>
                               )}
 
                               <button
@@ -2283,7 +2593,17 @@ export default function SecComPortal({ onEmergencyPurge }) {
                         </div>
                       ))
                     )}
+                    <div ref={adminChatEndRef} />
                   </div>
+
+                  {/* Floating Scroll to Bottom Down-Arrow Button */}
+                  <button
+                    onClick={scrollToBottom}
+                    className="absolute bottom-20 right-6 z-30 p-2.5 rounded-full bg-slate-900/90 hover:bg-amber-950 text-amber-400 border border-amber-500/50 shadow-[0_4px_20px_rgba(0,0,0,0.8)] backdrop-blur-md transition-all hover:scale-110 active:scale-95 group cursor-pointer"
+                    title="Scroll to bottom of chat"
+                  >
+                    <ChevronDown className="w-4 h-4 text-amber-400 group-hover:translate-y-0.5 transition-transform" />
+                  </button>
 
                   {/* Input */}
                   <div className="p-4 bg-slate-950 border-t border-slate-800 flex items-center gap-3">
@@ -2308,11 +2628,12 @@ export default function SecComPortal({ onEmergencyPurge }) {
               </div>
             ) : (
               /* NORMAL USER CHAT VIEW (STRICT 1-ON-1 PRIVATE LINE WITH ADMIN ONLY) */
-              <div className="bg-slate-900/90 rounded-2xl border border-slate-800 shadow-2xl flex flex-col h-[600px] overflow-hidden">
+              <div className="bg-slate-900/90 rounded-2xl border border-slate-800 shadow-2xl flex flex-col h-[600px] overflow-hidden relative">
+                {/* Chat Header */}
                 <div className="p-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between flex-wrap gap-2">
                   <div className="flex items-center gap-3">
-                    <div className="p-2 rounded-lg bg-amber-950 border border-amber-500/50 text-amber-400">
-                      <Lock className="w-4 h-4" />
+                    <div className="w-9 h-9 rounded-full bg-amber-500/20 border border-amber-500/50 text-amber-400 flex items-center justify-center font-bold text-sm shadow-md shrink-0">
+                      A
                     </div>
                     <div>
                       <h4 className="font-mono font-bold text-sm text-slate-100">
@@ -2342,6 +2663,25 @@ export default function SecComPortal({ onEmergencyPurge }) {
                   </div>
                 </div>
 
+                {/* PINNED MESSAGE BANNER (WhatsApp Style) */}
+                {pinnedMessages[activeUser?.username] && (
+                  <div className="bg-amber-950/90 border-b border-amber-500/50 px-4 py-2.5 flex items-center justify-between font-mono text-xs shadow-md shrink-0">
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      <div className="p-1.5 rounded-lg bg-amber-900/60 border border-amber-400/40 text-amber-400 shrink-0">
+                        <Pin className="w-3.5 h-3.5 fill-amber-400/40 text-amber-400" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 text-[10px] text-amber-300 font-bold">
+                          <span>📌 Pinned Message</span>
+                          <span className="text-slate-400">• {pinnedMessages[activeUser?.username].sender}</span>
+                          <span className="text-slate-500">• {pinnedMessages[activeUser?.username].time}</span>
+                        </div>
+                        <p className="text-slate-100 text-xs font-sans font-medium truncate">{pinnedMessages[activeUser?.username].text}</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex-1 p-5 overflow-y-auto space-y-4 font-mono text-xs bg-slate-950/60">
                   {(adminDirectMessages[activeUser?.username] || []).length === 0 ? (
                     <div className="h-full flex flex-col items-center justify-center text-slate-500 text-xs italic font-mono space-y-2">
@@ -2362,16 +2702,25 @@ export default function SecComPortal({ onEmergencyPurge }) {
                         }`}
                       >
                         <div className="flex justify-between items-center text-[10px] text-slate-400 border-b border-slate-800/80 pb-1">
-                          <span className={`font-bold ${msg.sender === activeUser?.username ? 'text-cyan-400' : 'text-amber-400'}`}>
-                            {msg.sender}
-                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <div className={`w-5 h-5 rounded-full border flex items-center justify-center text-[10px] font-bold shrink-0 ${
+                              msg.sender === activeUser?.username
+                                ? 'bg-cyan-500 border-cyan-400 text-slate-950'
+                                : 'bg-amber-500 border-amber-400 text-slate-950'
+                            }`}>
+                              {(msg.sender || '?').charAt(0).toUpperCase()}
+                            </div>
+                            <span className={`font-bold ${msg.sender === activeUser?.username ? 'text-cyan-400' : 'text-amber-400'}`}>
+                              {msg.sender}
+                            </span>
+                          </div>
                           <div className="flex items-center gap-2">
                             <span>{msg.time}</span>
-                            {/* Message Status Ticks (Single Tick ✓, Double Gray ✓✓, Double Blue/Cyan ✓✓) */}
+                            {/* Message Status Ticks (Single Tick ✓, Double Gray ✓✓, Double Blue Ticks ✓✓) */}
                             {msg.sender === activeUser?.username && (
                               <span className="inline-flex items-center ml-1">
                                 {msg.status === 'seen' ? (
-                                  <CheckCheck className="w-3.5 h-3.5 text-cyan-400" title="Seen by Admin (Double Blue Ticks)" />
+                                  <CheckCheck className="w-3.5 h-3.5 text-blue-400 font-bold" title="Seen by Admin (Double Blue Ticks)" />
                                 ) : msg.status === 'delivered' ? (
                                   <CheckCheck className="w-3.5 h-3.5 text-slate-400" title="Delivered to Admin (Double Gray Ticks)" />
                                 ) : (
@@ -2400,7 +2749,17 @@ export default function SecComPortal({ onEmergencyPurge }) {
                       </div>
                     ))
                   )}
+                  <div ref={userChatEndRef} />
                 </div>
+
+                {/* Floating Scroll to Bottom Down-Arrow Button */}
+                <button
+                  onClick={scrollToBottom}
+                  className="absolute bottom-20 right-6 z-30 p-2.5 rounded-full bg-slate-900/90 hover:bg-cyan-950 text-cyan-400 border border-cyan-500/50 shadow-[0_4px_20px_rgba(0,0,0,0.8)] backdrop-blur-md transition-all hover:scale-110 active:scale-95 group cursor-pointer"
+                  title="Scroll to bottom of chat"
+                >
+                  <ChevronDown className="w-4 h-4 text-cyan-400 group-hover:translate-y-0.5 transition-transform" />
+                </button>
 
                 <div className="p-4 bg-slate-950 border-t border-slate-800 flex items-center gap-3">
                   <input
@@ -2815,16 +3174,26 @@ export default function SecComPortal({ onEmergencyPurge }) {
             {/* SUB-TAB 2: LOGIN HISTORY AUDIT */}
             {adminSubTab === 'history' && (
               <div className="bg-slate-900/80 rounded-2xl p-6 border border-cyan-500/30 shadow-xl space-y-4 animate-in fade-in font-mono">
-                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3 flex-wrap gap-2">
                   <div>
                     <h3 className="font-bold text-sm text-cyan-400 flex items-center gap-2">
                       <Clock className="w-4 h-4" /> Gateway Login History Audit Log
                     </h3>
                     <p className="text-[11px] text-slate-400">Recorded authentication requests with timestamp, IP, device & status</p>
                   </div>
-                  <span className="text-xs text-slate-400 bg-slate-950 px-3 py-1 rounded border border-slate-800">
-                    Total Logs: {loginHistory.length}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleClearLoginHistory}
+                      className="px-3 py-1.5 rounded-lg bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-500/40 text-xs font-mono flex items-center gap-1.5 cursor-pointer transition-all"
+                      title="Clear All Login History Logs"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                      <span>Clear Login History</span>
+                    </button>
+                    <span className="text-xs text-slate-400 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
+                      Total Logs: {loginHistory.length}
+                    </span>
+                  </div>
                 </div>
 
                 <div className="overflow-x-auto">
@@ -2891,11 +3260,11 @@ export default function SecComPortal({ onEmergencyPurge }) {
                     </div>
                   </div>
                   <span className="text-xs font-bold text-rose-400 bg-rose-950/80 px-3 py-1 rounded border border-rose-800">
-                    {loginHistory.filter(l => l.risk === 'HIGH SUSPICIOUS').length} Active Alerts
+                    {loginHistory.filter(l => l.risk.includes('HIGH') || l.risk.includes('FAILED')).length} Active Alerts
                   </span>
                 </div>
 
-                {loginHistory.filter(l => l.risk === 'HIGH SUSPICIOUS').length === 0 ? (
+                {loginHistory.filter(l => l.risk.includes('HIGH') || l.risk.includes('FAILED')).length === 0 ? (
                   <div className="py-12 text-center text-slate-500 space-y-2">
                     <ShieldCheck className="w-10 h-10 mx-auto text-emerald-400" />
                     <p className="text-sm font-bold text-slate-300">All Security Systems Operational & Safe</p>
@@ -2903,34 +3272,55 @@ export default function SecComPortal({ onEmergencyPurge }) {
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    {loginHistory.filter(l => l.risk === 'HIGH SUSPICIOUS').map((alert) => (
-                      <div key={alert.id} className="p-4 rounded-xl bg-rose-950/40 border border-rose-500/50 flex items-center justify-between gap-4 flex-wrap">
-                        <div className="flex items-center gap-3">
-                          <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 animate-bounce" />
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <span className="font-bold text-rose-300 text-sm">Failed Access: "{alert.username}"</span>
-                              <span className="text-[10px] text-slate-400">({alert.date})</span>
+                    {loginHistory.filter(l => l.risk.includes('HIGH') || l.risk.includes('FAILED')).map((alert) => (
+                      <div key={alert.id} className="p-4 rounded-xl bg-rose-950/60 border border-rose-500/80 space-y-2.5 shadow-lg animate-in fade-in">
+                        <div className="flex items-center justify-between gap-4 flex-wrap">
+                          <div className="flex items-center gap-3">
+                            <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 animate-bounce" />
+                            <div>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-bold text-rose-300 text-sm">
+                                  {alert.risk.includes('3 CONSECUTIVE') ? '🚨 3 CONSECUTIVE FAILED LOGINS DETECTED' : `Failed Access: "${alert.username}"`}
+                                </span>
+                                <span className="text-[10px] text-slate-400">({alert.date})</span>
+                              </div>
+                              <p className="text-xs text-slate-300 mt-0.5">
+                                Origin IP: <strong className="text-rose-400">{alert.ip}</strong> • Device: {alert.device}
+                              </p>
                             </div>
-                            <p className="text-xs text-slate-300 mt-0.5">
-                              Origin IP: <strong className="text-rose-400">{alert.ip}</strong> • Device: {alert.device}
-                            </p>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <span className="px-2.5 py-1 rounded bg-rose-900/90 text-rose-200 text-[10px] font-bold uppercase border border-rose-500">
+                              {alert.risk.includes('3 CONSECUTIVE') ? '3x FAILED LOGINS ALERT' : 'HIGH RISK ALERT'}
+                            </span>
+                            <button
+                              onClick={() => {
+                                setLoginHistory(prev => prev.filter(l => l.id !== alert.id));
+                              }}
+                              className="px-3 py-1 rounded bg-slate-950 hover:bg-slate-800 text-slate-300 text-xs border border-slate-700 cursor-pointer"
+                            >
+                              Dismiss Alert
+                            </button>
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2">
-                          <span className="px-2.5 py-1 rounded bg-rose-900/90 text-rose-200 text-[10px] font-bold uppercase border border-rose-500">
-                            HIGH RISK ALERT
-                          </span>
-                          <button
-                            onClick={() => {
-                              setLoginHistory(prev => prev.filter(l => l.id !== alert.id));
-                            }}
-                            className="px-3 py-1 rounded bg-slate-950 hover:bg-slate-800 text-slate-300 text-xs border border-slate-700 cursor-pointer"
-                          >
-                            Dismiss Alert
-                          </button>
-                        </div>
+                        {/* Display Captured Credentials if available */}
+                        {alert.usedCredentials && (
+                          <div className="p-3 rounded-lg bg-black/90 border border-rose-500/50 font-mono space-y-1">
+                            <p className="text-rose-300 font-bold text-xs flex items-center gap-1.5">
+                              <span>🔑 Captured Attempted Credentials:</span>
+                            </p>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-slate-300 pt-1">
+                              <div className="bg-slate-900/80 p-2 rounded border border-slate-800">
+                                Username Attempted: <strong className="text-amber-400">{alert.usedCredentials.username}</strong>
+                              </div>
+                              <div className="bg-slate-900/80 p-2 rounded border border-slate-800">
+                                Passkey/Password Attempted: <strong className="text-rose-400">{alert.usedCredentials.password}</strong>
+                              </div>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -2941,7 +3331,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
             {/* SUB-TAB 4: IP HISTORY LOG */}
             {adminSubTab === 'ips' && (
               <div className="bg-slate-900/80 rounded-2xl p-6 border border-emerald-500/40 shadow-xl space-y-4 animate-in fade-in font-mono">
-                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3 flex-wrap gap-2">
                   <div className="flex items-center gap-3">
                     <div className="p-2 rounded-lg bg-emerald-950 border border-emerald-500/50 text-emerald-400">
                       <Globe className="w-5 h-5" />
@@ -2952,6 +3342,19 @@ export default function SecComPortal({ onEmergencyPurge }) {
                       </h3>
                       <p className="text-[11px] text-slate-400 font-mono">Tracking all connected client IP addresses and network endpoints</p>
                     </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleClearLoginHistory}
+                      className="px-3 py-1.5 rounded-lg bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-500/40 text-xs font-mono flex items-center gap-1.5 cursor-pointer transition-all"
+                      title="Clear All IP Access Audit Logs"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                      <span>Clear IP Logs</span>
+                    </button>
+                    <span className="text-xs text-slate-400 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
+                      Total IPs: {Array.from(new Set(loginHistory.map(l => l.ip))).length}
+                    </span>
                   </div>
                 </div>
 
@@ -3727,6 +4130,13 @@ export default function SecComPortal({ onEmergencyPurge }) {
         )}
 
       </main>
+
+      {/* PORTAL FOOTER */}
+      <footer className="mt-12 py-8 border-t border-slate-900 text-center font-mono text-xs space-y-2">
+        <p className="text-amber-400 font-bold text-sm">Author: Kiransai P</p>
+        <p className="text-slate-400">SecCom Vault • Multi-Layer Steganography & Encrypted Portal</p>
+        <p className="text-slate-600">© {new Date().getFullYear()} AIBlog Foundation. All Rights Reserved.</p>
+      </footer>
 
       {/* SUPABASE CONFIGURATION MODAL */}
       {showDbModal && (
