@@ -254,42 +254,81 @@ export default function SecComPortal({ onEmergencyPurge }) {
         }
       };
 
-      // 3. Fetch Direct Messages
+      // 3. Fetch Direct Messages (with direct is_pinned backup)
       const fetchDirectMessages = async () => {
         const { data, error } = await supabase.from('direct_messages').select('*').order('created_at', { ascending: true });
         if (!error && data) {
           const grouped = {};
+          const pinnedFromDirect = {};
           data.forEach(m => {
             if (!grouped[m.target_user]) grouped[m.target_user] = [];
-            grouped[m.target_user].push({
+            const msgObj = {
               id: m.id,
               sender: m.sender,
               cipher: m.cipher,
               text: m.text,
               time: m.created_at ? formatTimestamp(m.created_at) : formatTimestamp(),
               status: m.status || 'delivered',
-              isGhost: m.is_ghost || false
-            });
+              isGhost: m.is_ghost || false,
+              isPinned: m.is_pinned || false
+            };
+            grouped[m.target_user].push(msgObj);
+            if (m.is_pinned) {
+              pinnedFromDirect[m.target_user] = msgObj;
+              pinnedFromDirect[m.target_user.toLowerCase()] = msgObj;
+            }
           });
           setAdminDirectMessages(prev => ({ ...prev, ...grouped }));
+          if (Object.keys(pinnedFromDirect).length > 0) {
+            setPinnedMessages(prev => ({ ...prev, ...pinnedFromDirect }));
+          }
         }
       };
 
-      // 4. Fetch Pinned Direct Messages
+      // 4. Fetch Pinned Direct Messages with multi-layer cloud fallback (Mobile + PC cross-sync)
       const fetchPinnedMessages = async () => {
+        let loadedPins = {};
+
+        // Attempt A: Dedicated pinned_messages table
         try {
           const { data, error } = await supabase.from('pinned_messages').select('*');
-          if (!error && data) {
-            const map = {};
+          if (!error && data && data.length > 0) {
             data.forEach((p) => {
               if (p.target_user && p.message_data) {
-                map[p.target_user] = typeof p.message_data === 'string' ? JSON.parse(p.message_data) : p.message_data;
+                const parsed = typeof p.message_data === 'string' ? JSON.parse(p.message_data) : p.message_data;
+                loadedPins[p.target_user] = parsed;
+                loadedPins[p.target_user.toLowerCase()] = parsed;
               }
             });
-            setPinnedMessages(prev => ({ ...prev, ...map }));
           }
         } catch (err) {
-          console.log('pinned_messages fetch info:', err);
+          console.log('pinned_messages query info:', err);
+        }
+
+        // Attempt B: Fallback query from room_messages (SYS_PINNED_MESSAGES)
+        if (Object.keys(loadedPins).length === 0) {
+          try {
+            const { data, error } = await supabase
+              .from('room_messages')
+              .select('*')
+              .eq('room', 'SYS_PINNED_MESSAGES')
+              .order('created_at', { ascending: false })
+              .limit(1);
+
+            if (!error && data && data.length > 0 && data[0].text) {
+              const parsed = JSON.parse(data[0].text);
+              if (parsed && typeof parsed === 'object') {
+                loadedPins = parsed;
+              }
+            }
+          } catch (err) {
+            console.log('SYS_PINNED_MESSAGES fallback query info:', err);
+          }
+        }
+
+        if (Object.keys(loadedPins).length > 0) {
+          setPinnedMessages(prev => ({ ...prev, ...loadedPins }));
+          localStorage.setItem('seccom_pinned_messages', JSON.stringify(loadedPins));
         }
       };
 
@@ -403,13 +442,24 @@ export default function SecComPortal({ onEmergencyPurge }) {
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'room_messages' }, (payload) => {
           const m = payload.new;
 
-          // Check if message is a System Face Sync or Global Broadcast
+          // Check if message is a System Face Sync, Global Broadcast, or Pinned Messages Sync
           if (m.room === 'SYS_FACE_BIOMETRICS' && m.text) {
             try {
               const parsed = JSON.parse(m.text);
               if (Array.isArray(parsed)) {
                 setFaceProfilesList(parsed);
                 localStorage.setItem('seccom_admin_face_profiles', JSON.stringify(parsed));
+              }
+            } catch {}
+            return;
+          }
+
+          if (m.room === 'SYS_PINNED_MESSAGES' && m.text) {
+            try {
+              const parsed = JSON.parse(m.text);
+              if (parsed && typeof parsed === 'object') {
+                setPinnedMessages(prev => ({ ...prev, ...parsed }));
+                localStorage.setItem('seccom_pinned_messages', JSON.stringify(parsed));
               }
             } catch {}
             return;
@@ -1467,6 +1517,11 @@ export default function SecComPortal({ onEmergencyPurge }) {
       const match = Object.keys(pinnedMessages).find(k => k && k.toLowerCase() === lower);
       if (match && pinnedMessages[match]) return pinnedMessages[match];
     }
+    // Fallback search inside direct messages array for isPinned flag
+    const userMsgs = adminDirectMessages[username] || adminDirectMessages[username?.toLowerCase()] || [];
+    const directPinned = userMsgs.find(m => m.isPinned || m.is_pinned);
+    if (directPinned) return directPinned;
+
     return pinnedMessages['user'] || pinnedMessages['all'] || null;
   };
 
@@ -1477,31 +1532,62 @@ export default function SecComPortal({ onEmergencyPurge }) {
     const newPinned = isAlreadyPinned ? null : msg;
 
     setPinnedMessages((prev) => {
+      const updated = {
+        ...prev,
+        [targetUser]: newPinned,
+        [targetUser.toLowerCase()]: newPinned
+      };
+      localStorage.setItem('seccom_pinned_messages', JSON.stringify(updated));
+
       emitRealtimeSync({
         type: 'PIN_DIRECT_MESSAGE',
         targetUser: targetUser,
         message: newPinned
       });
 
-      return {
-        ...prev,
-        [targetUser]: newPinned,
-        [targetUser.toLowerCase()]: newPinned
-      };
+      return updated;
     });
 
     if (isSupabaseConfigured && supabase) {
       try {
+        // Layer 1: Dedicated pinned_messages table
         if (newPinned) {
           await supabase.from('pinned_messages').upsert({
             target_user: targetUser,
             message_id: msg.id,
             message_data: newPinned,
             pinned_by: 'Admin'
-          }, { onConflict: 'target_user' });
+          }, { onConflict: 'target_user' }).catch(() => {});
         } else {
-          await supabase.from('pinned_messages').delete().eq('target_user', targetUser);
+          await supabase.from('pinned_messages').delete().eq('target_user', targetUser).catch(() => {});
         }
+
+        // Layer 2: Update is_pinned status in direct_messages table
+        await supabase.from('direct_messages')
+          .update({ is_pinned: false })
+          .eq('target_user', targetUser)
+          .catch(() => {});
+
+        if (newPinned) {
+          await supabase.from('direct_messages')
+            .update({ is_pinned: true })
+            .eq('id', msg.id)
+            .catch(() => {});
+        }
+
+        // Layer 3: System room backup in room_messages (SYS_PINNED_MESSAGES)
+        const updatedPinnedObj = {
+          ...pinnedMessages,
+          [targetUser]: newPinned,
+          [targetUser.toLowerCase()]: newPinned
+        };
+        await supabase.from('room_messages').insert({
+          room: 'SYS_PINNED_MESSAGES',
+          sender: 'SYSTEM',
+          cipher: 'SYS.PIN',
+          text: JSON.stringify(updatedPinnedObj)
+        }).catch(() => {});
+
       } catch (err) {
         console.warn('Supabase pin save info:', err);
       }
