@@ -114,10 +114,20 @@ export default function SecComPortal({ onEmergencyPurge }) {
   const [inactivitySeconds, setInactivitySeconds] = useState(40);
 
   // USER MANAGEMENT STATE (CRUD)
-  const [usersList, setUsersList] = useState([
-    { id: 'usr-1', username: 'admin', passkey: 'admin', role: 'Admin', status: 'Active', created: '2026-07-26' },
-    { id: 'usr-2', username: 'user', passkey: 'user', role: 'User', status: 'Active', created: '2026-07-26' }
-  ]);
+  const [usersList, setUsersList] = useState(() => {
+    try {
+      const saved = localStorage.getItem('seccom_users_list');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.filter(u => !(u.username.toLowerCase() === 'admin' && u.passkey === 'admin'));
+        }
+      }
+    } catch {}
+    return [
+      { id: 'usr-2', username: 'user', passkey: 'user', role: 'User', status: 'Active', created: '2026-07-26' }
+    ];
+  });
   const [newUsername, setNewUsername] = useState('');
   const [newPasskey, setNewPasskey] = useState('');
   const [newRole, setNewRole] = useState('User');
@@ -1337,10 +1347,8 @@ export default function SecComPortal({ onEmergencyPurge }) {
       }
     }
 
-    // Fallback default matching if table is brand new
-    if (!foundUser && cleanUser === 'admin' && cleanPass === 'admin') {
-      foundUser = { username: 'admin', passkey: 'admin', role: 'Admin' };
-    } else if (!foundUser && cleanUser === 'user' && cleanPass === 'user') {
+    // Fallback default matching for standard user if database is unseeded
+    if (!foundUser && cleanUser === 'user' && cleanPass === 'user') {
       foundUser = { username: 'user', passkey: 'user', role: 'User' };
     }
 

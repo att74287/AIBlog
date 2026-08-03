@@ -8,9 +8,8 @@ const supabase = createClient(supabaseUrl, supabaseAnonKey);
 async function seed() {
   console.log('Seeding Supabase user accounts...');
   
-  // Upsert user/user and admin/admin
+  // Upsert user/user
   const { data, error } = await supabase.from('vault_users').upsert([
-    { username: 'admin', passkey: 'admin', role: 'Admin', status: 'Active' },
     { username: 'user', passkey: 'user', role: 'User', status: 'Active' }
   ], { onConflict: 'username' }).select();
 
