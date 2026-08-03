@@ -219,18 +219,48 @@ export default function SecComPortal({ onEmergencyPurge }) {
   // SUPABASE DATABASE INITIALIZATION & REALTIME LISTENERS
   useEffect(() => {
     if (isSupabaseConfigured && supabase) {
-      // 1. Fetch Users
+      // 1. Fetch Users (with multi-layer cloud fallback for vault_users and SYS_USERS_LIST)
       const fetchSupabaseUsers = async () => {
-        const { data, error } = await supabase.from('vault_users').select('*');
-        if (!error && data && data.length > 0) {
-          setUsersList(data.map(u => ({
-            id: u.id,
-            username: u.username,
-            passkey: u.passkey,
-            role: u.role || 'User',
-            status: u.status || 'Active',
-            created: u.created_at ? u.created_at.split('T')[0] : '2026-07-26'
-          })));
+        let loadedUsers = [];
+        try {
+          const { data, error } = await supabase.from('vault_users').select('*');
+          if (!error && data && data.length > 0) {
+            loadedUsers = data.map(u => ({
+              id: u.id,
+              username: u.username,
+              passkey: u.passkey,
+              role: u.role || 'User',
+              status: u.status || 'Active',
+              created: u.created_at ? u.created_at.split('T')[0] : '2026-07-26'
+            }));
+          }
+        } catch (err) {
+          console.log('vault_users fetch info:', err);
+        }
+
+        if (loadedUsers.length === 0) {
+          try {
+            const { data, error } = await supabase
+              .from('room_messages')
+              .select('*')
+              .eq('room', 'SYS_USERS_LIST')
+              .order('created_at', { ascending: false })
+              .limit(1);
+
+            if (!error && data && data.length > 0 && data[0].text) {
+              const parsed = JSON.parse(data[0].text);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                loadedUsers = parsed;
+              }
+            }
+          } catch (err) {
+            console.log('SYS_USERS_LIST fallback query info:', err);
+          }
+        }
+
+        if (loadedUsers.length > 0) {
+          setUsersList(loadedUsers);
+          localStorage.setItem('seccom_users_list', JSON.stringify(loadedUsers));
         }
       };
 
@@ -439,16 +469,49 @@ export default function SecComPortal({ onEmergencyPurge }) {
 
       // 6. Subscribe to Supabase Realtime Channels
       const channel = supabase.channel('seccom_realtime_db')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'vault_users' }, (payload) => {
+          if (payload.eventType === 'DELETE' && payload.old) {
+            setUsersList(prev => prev.filter(u => u.id !== payload.old.id && u.username !== payload.old.username));
+          } else if (payload.new) {
+            const u = payload.new;
+            const userObj = {
+              id: u.id,
+              username: u.username,
+              passkey: u.passkey,
+              role: u.role || 'User',
+              status: u.status || 'Active',
+              created: u.created_at ? u.created_at.split('T')[0] : '2026-07-26'
+            };
+            setUsersList(prev => {
+              const exists = prev.some(existing => existing.id === u.id || existing.username.toLowerCase() === u.username.toLowerCase());
+              if (exists) {
+                return prev.map(existing => (existing.id === u.id || existing.username.toLowerCase() === u.username.toLowerCase()) ? userObj : existing);
+              }
+              return [...prev, userObj];
+            });
+          }
+        })
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'room_messages' }, (payload) => {
           const m = payload.new;
 
-          // Check if message is a System Face Sync, Global Broadcast, or Pinned Messages Sync
+          // Check if message is a System Face Sync, Users Sync, Global Broadcast, or Pinned Messages Sync
           if (m.room === 'SYS_FACE_BIOMETRICS' && m.text) {
             try {
               const parsed = JSON.parse(m.text);
               if (Array.isArray(parsed)) {
                 setFaceProfilesList(parsed);
                 localStorage.setItem('seccom_admin_face_profiles', JSON.stringify(parsed));
+              }
+            } catch {}
+            return;
+          }
+
+          if (m.room === 'SYS_USERS_LIST' && m.text) {
+            try {
+              const parsed = JSON.parse(m.text);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                setUsersList(parsed);
+                localStorage.setItem('seccom_users_list', JSON.stringify(parsed));
               }
             } catch {}
             return;
@@ -657,6 +720,11 @@ export default function SecComPortal({ onEmergencyPurge }) {
         delete copy[data.targetUser];
         return copy;
       });
+    } else if (data.type === 'USERS_SYNC') {
+      if (Array.isArray(data.usersList)) {
+        setUsersList(data.usersList);
+        localStorage.setItem('seccom_users_list', JSON.stringify(data.usersList));
+      }
     } else if (data.type === 'PIN_DIRECT_MESSAGE') {
       setPinnedMessages((prev) => ({
         ...prev,
@@ -1224,44 +1292,72 @@ export default function SecComPortal({ onEmergencyPurge }) {
     }
   };
 
-  // HANDLE GATEWAY LOGIN VERIFICATION (SMART AUTO-ROLE LOGIN)
-  const handleGatewayLogin = (e) => {
+  // HANDLE GATEWAY LOGIN VERIFICATION (SMART DYNAMIC ROLE VERIFICATION)
+  const handleGatewayLogin = async (e) => {
     e.preventDefault();
     setLoginError('');
 
     const cleanUser = loginUsername.trim().toLowerCase();
     const cleanPass = loginPassword.trim();
 
-    // Check if Admin Credentials
-    if (cleanUser === 'admin' && cleanPass === 'admin') {
-      setFailedLoginCounter(0);
-      recordLoginAttempt('admin', 'SUCCESS', 'LOW');
-      setAuthRole('admin');
-      setActiveUser({ username: 'admin', role: 'Admin' });
-      setRoomSenderName('Admin-Command');
-      setActiveTab('admin');
-      return;
-    }
-
-    // Check against usersList or default user credentials
-    const foundUser = usersList.find(
+    // 1. Check in local usersList state
+    let foundUser = usersList.find(
       (u) => u.username.toLowerCase() === cleanUser && u.passkey === cleanPass
     );
 
-    if (foundUser || (cleanUser === 'user' && cleanPass === 'user')) {
+    // 2. If not found in memory, query Supabase vault_users directly
+    if (!foundUser && isSupabaseConfigured && supabase) {
+      try {
+        const { data } = await supabase
+          .from('vault_users')
+          .select('*')
+          .ilike('username', cleanUser)
+          .eq('passkey', cleanPass)
+          .maybeSingle();
+
+        if (data) {
+          foundUser = {
+            id: data.id,
+            username: data.username,
+            passkey: data.passkey,
+            role: data.role || 'User',
+            status: data.status || 'Active',
+            created: data.created_at ? data.created_at.split('T')[0] : '2026-07-26'
+          };
+          setUsersList(prev => {
+            const updated = prev.some(u => u.username.toLowerCase() === cleanUser)
+              ? prev.map(u => u.username.toLowerCase() === cleanUser ? foundUser : u)
+              : [...prev, foundUser];
+            localStorage.setItem('seccom_users_list', JSON.stringify(updated));
+            return updated;
+          });
+        }
+      } catch (err) {
+        console.log('Login Supabase user query info:', err);
+      }
+    }
+
+    // Fallback default matching if table is brand new
+    if (!foundUser && cleanUser === 'admin' && cleanPass === 'admin') {
+      foundUser = { username: 'admin', passkey: 'admin', role: 'Admin' };
+    } else if (!foundUser && cleanUser === 'user' && cleanPass === 'user') {
+      foundUser = { username: 'user', passkey: 'user', role: 'User' };
+    }
+
+    if (foundUser) {
       setFailedLoginCounter(0);
-      const loggedUser = foundUser || { username: 'user', role: 'User' };
-      recordLoginAttempt(loggedUser.username, 'SUCCESS', 'LOW');
-      if (loggedUser.role === 'Admin' || loggedUser.username.toLowerCase() === 'admin') {
+      recordLoginAttempt(foundUser.username, 'SUCCESS', 'LOW');
+
+      if (foundUser.role === 'Admin' || foundUser.username.toLowerCase() === 'admin') {
         setAuthRole('admin');
-        setActiveUser({ username: loggedUser.username, role: 'Admin' });
+        setActiveUser({ username: foundUser.username, role: 'Admin' });
         setRoomSenderName('Admin-Command');
         setActiveTab('admin');
       } else {
         setAuthRole('user');
-        setActiveUser(loggedUser);
-        setRoomSenderName(loggedUser.username);
-        setSelectedChatUser(loggedUser.username);
+        setActiveUser(foundUser);
+        setRoomSenderName(foundUser.username);
+        setSelectedChatUser(foundUser.username);
         setActiveTab('chat');
       }
     } else {
@@ -1288,39 +1384,78 @@ export default function SecComPortal({ onEmergencyPurge }) {
     }
   };
 
-  // ADMIN USER CRUD OPERATIONS
+  // Helper to persist users to room_messages system backup
+  const syncUsersListToSystemRoom = async (users) => {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('room_messages').insert({
+          room: 'SYS_USERS_LIST',
+          sender: 'SYSTEM',
+          cipher: 'SYS.USERS',
+          text: JSON.stringify(users)
+        }).catch(() => {});
+      } catch {}
+    }
+  };
+
+  // ADMIN USER CRUD OPERATIONS (PERSISTENT CLOUD & LOCAL SYNC)
   const handleCreateUser = async (e) => {
     e.preventDefault();
     if (!newUsername || !newPasskey) return;
 
-    if (isSupabaseConfigured && supabase) {
-      const { data, error } = await supabase.from('vault_users').insert({
-        username: newUsername,
-        passkey: newPasskey,
-        role: newRole,
-        status: 'Active'
-      }).select().single();
+    const createdUserObj = {
+      id: 'usr-' + Date.now(),
+      username: newUsername,
+      passkey: newPasskey,
+      role: newRole,
+      status: 'Active',
+      created: new Date().toISOString().split('T')[0]
+    };
 
-      if (!error && data) {
-        setUsersList(prev => [...prev, {
-          id: data.id,
-          username: data.username,
-          passkey: data.passkey,
-          role: data.role,
-          status: data.status,
-          created: data.created_at.split('T')[0]
-        }]);
+    let finalUserList = [];
+    setUsersList(prev => {
+      const exists = prev.some(u => u.username.toLowerCase() === newUsername.toLowerCase());
+      if (exists) {
+        finalUserList = prev.map(u => u.username.toLowerCase() === newUsername.toLowerCase() ? { ...u, ...createdUserObj } : u);
+      } else {
+        finalUserList = [...prev, createdUserObj];
       }
-    } else {
-      const newUser = {
-        id: 'usr-' + Date.now(),
-        username: newUsername,
-        passkey: newPasskey,
-        role: newRole,
-        status: 'Active',
-        created: new Date().toISOString().split('T')[0]
-      };
-      setUsersList(prev => [...prev, newUser]);
+      localStorage.setItem('seccom_users_list', JSON.stringify(finalUserList));
+      return finalUserList;
+    });
+
+    emitRealtimeSync({
+      type: 'USERS_SYNC',
+      usersList: finalUserList
+    });
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase.from('vault_users').upsert({
+          username: newUsername,
+          passkey: newPasskey,
+          role: newRole,
+          status: 'Active'
+        }, { onConflict: 'username' }).select().single();
+
+        if (!error && data) {
+          setUsersList(prev => {
+            const updated = prev.map(u => u.username.toLowerCase() === newUsername.toLowerCase() ? {
+              ...u,
+              id: data.id,
+              created: data.created_at ? data.created_at.split('T')[0] : u.created
+            } : u);
+            localStorage.setItem('seccom_users_list', JSON.stringify(updated));
+            syncUsersListToSystemRoom(updated);
+            return updated;
+          });
+        } else {
+          syncUsersListToSystemRoom(finalUserList);
+        }
+      } catch (err) {
+        console.warn('Supabase create user info:', err);
+        syncUsersListToSystemRoom(finalUserList);
+      }
     }
 
     setNewUsername('');
@@ -1328,10 +1463,30 @@ export default function SecComPortal({ onEmergencyPurge }) {
   };
 
   const handleDeleteUser = async (userId) => {
+    const userToDelete = usersList.find(u => u.id === userId);
+    let updatedList = [];
+    setUsersList(prev => {
+      updatedList = prev.filter(u => u.id !== userId);
+      localStorage.setItem('seccom_users_list', JSON.stringify(updatedList));
+      return updatedList;
+    });
+
+    emitRealtimeSync({
+      type: 'USERS_SYNC',
+      usersList: updatedList
+    });
+
     if (isSupabaseConfigured && supabase) {
-      await supabase.from('vault_users').delete().eq('id', userId);
+      try {
+        await supabase.from('vault_users').delete().eq('id', userId).catch(() => {});
+        if (userToDelete?.username) {
+          await supabase.from('vault_users').delete().eq('username', userToDelete.username).catch(() => {});
+        }
+        syncUsersListToSystemRoom(updatedList);
+      } catch (err) {
+        console.warn('Supabase delete user info:', err);
+      }
     }
-    setUsersList(prev => prev.filter(u => u.id !== userId));
   };
 
   const handleStartEditUser = (user) => {
@@ -1342,19 +1497,54 @@ export default function SecComPortal({ onEmergencyPurge }) {
   };
 
   const handleSaveEditUser = async (userId) => {
-    if (isSupabaseConfigured && supabase) {
-      await supabase
-        .from('vault_users')
-        .update({ username: editUsername, passkey: editPasskey, role: editRole })
-        .eq('id', userId);
-    }
-    setUsersList((prev) =>
-      prev.map((u) =>
+    const targetUser = usersList.find(u => u.id === userId);
+    const oldUsername = targetUser ? targetUser.username : editUsername;
+
+    let updatedList = [];
+    setUsersList((prev) => {
+      updatedList = prev.map((u) =>
         u.id === userId
           ? { ...u, username: editUsername, passkey: editPasskey, role: editRole }
           : u
-      )
-    );
+      );
+      localStorage.setItem('seccom_users_list', JSON.stringify(updatedList));
+      return updatedList;
+    });
+
+    emitRealtimeSync({
+      type: 'USERS_SYNC',
+      usersList: updatedList
+    });
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        // Attempt update by ID first
+        let updateRes = await supabase
+          .from('vault_users')
+          .update({ username: editUsername, passkey: editPasskey, role: editRole })
+          .eq('id', userId);
+
+        // If ID didn't match (or local ID), update by original username or upsert
+        if (updateRes.error || (updateRes.count === 0)) {
+          updateRes = await supabase
+            .from('vault_users')
+            .update({ username: editUsername, passkey: editPasskey, role: editRole })
+            .eq('username', oldUsername);
+        }
+
+        if (updateRes.error || (updateRes.count === 0)) {
+          await supabase
+            .from('vault_users')
+            .upsert({ username: editUsername, passkey: editPasskey, role: editRole, status: 'Active' }, { onConflict: 'username' });
+        }
+
+        syncUsersListToSystemRoom(updatedList);
+      } catch (err) {
+        console.warn('Supabase edit user info:', err);
+        syncUsersListToSystemRoom(updatedList);
+      }
+    }
+
     setEditingUserId(null);
   };
 
