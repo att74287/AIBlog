@@ -211,6 +211,15 @@ export default function SecComPortal({ onEmergencyPurge }) {
   });
   const [directMsgInput, setDirectMsgInput] = useState('');
 
+  // HELPER TO RETRIEVE DIRECT MESSAGES CASE-INSENSITIVELY FOR ANY TARGET USERNAME
+  const getDirectMessagesForUser = (username) => {
+    if (!username) return [];
+    const targetLower = username.toLowerCase();
+    const key = Object.keys(adminDirectMessages).find(k => k && k.toLowerCase() === targetLower);
+    if (key) return adminDirectMessages[key];
+    return adminDirectMessages[username] || [];
+  };
+
   useEffect(() => {
     try {
       localStorage.setItem('seccom_direct_messages', JSON.stringify(adminDirectMessages));
@@ -339,13 +348,16 @@ export default function SecComPortal({ onEmergencyPurge }) {
     return () => clearInterval(timer);
   }, []);
 
-  // SCREEN OFF / DEVICE LOCK / TAB INVISIBILITY PANIC RESET
+  // SCREEN OFF / DEVICE LOCK / TAB INVISIBILITY PANIC RESET TO COVER ARTICLE PAGE
   useEffect(() => {
     const handleScreenOffOrLock = () => {
       if (document.hidden || document.visibilityState === 'hidden') {
         setAuthRole('unauthenticated');
         setActiveUser(null);
         setActiveTab('chat');
+        if (typeof onEmergencyPurge === 'function') {
+          onEmergencyPurge();
+        }
       }
     };
 
@@ -356,7 +368,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
       document.removeEventListener('visibilitychange', handleScreenOffOrLock);
       window.removeEventListener('pagehide', handleScreenOffOrLock);
     };
-  }, []);
+  }, [onEmergencyPurge]);
 
   // REALTIME ADMIN BROADCAST & BURN NOTE STATE
   const [activeBroadcastNote, setActiveBroadcastNote] = useState(null);
@@ -729,25 +741,59 @@ export default function SecComPortal({ onEmergencyPurge }) {
             isGhost: m.is_ghost || false
           };
           setAdminDirectMessages(prev => {
-            const list = prev[m.target_user] || [];
+            const rawTarget = m.target_user || 'user';
+            const targetLower = rawTarget.toLowerCase();
+            const key = Object.keys(prev).find(k => k && k.toLowerCase() === targetLower) || rawTarget;
+            const list = prev[key] || [];
             const exists = list.some(existing => existing.id === m.id || (existing.sender === m.sender && existing.text === m.text));
+            let newList;
             if (exists) {
-              const updated = list.map(existing =>
+              newList = list.map(existing =>
                 (existing.id === m.id || (existing.sender === m.sender && existing.text === m.text)) ? msgObj : existing
               );
-              return { ...prev, [m.target_user]: updated };
+            } else {
+              newList = [...list, msgObj];
             }
-            return { ...prev, [m.target_user]: [...list, msgObj] };
+            return {
+              ...prev,
+              [key]: newList,
+              [targetLower]: newList
+            };
           });
+
+          if (m.sender && m.sender !== 'Admin') {
+            const senderName = m.sender;
+            setUsersList(prev => {
+              if (prev.some(u => u.username.toLowerCase() === senderName.toLowerCase())) return prev;
+              const newUser = {
+                id: 'usr-' + Date.now(),
+                username: senderName,
+                passkey: '****',
+                role: 'User',
+                status: 'Active',
+                created: '2026-07-26'
+              };
+              const updated = [...prev, newUser];
+              localStorage.setItem('seccom_users_list', JSON.stringify(updated));
+              return updated;
+            });
+          }
         })
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'direct_messages' }, (payload) => {
           const m = payload.new;
           setAdminDirectMessages(prev => {
-            const list = prev[m.target_user] || [];
+            const rawTarget = m.target_user || 'user';
+            const targetLower = rawTarget.toLowerCase();
+            const key = Object.keys(prev).find(k => k && k.toLowerCase() === targetLower) || rawTarget;
+            const list = prev[key] || [];
             const updated = list.map(existing =>
               existing.id === m.id ? { ...existing, status: m.status || existing.status } : existing
             );
-            return { ...prev, [m.target_user]: updated };
+            return {
+              ...prev,
+              [key]: updated,
+              [targetLower]: updated
+            };
           });
         })
         .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'direct_messages' }, (payload) => {
@@ -827,21 +873,45 @@ export default function SecComPortal({ onEmergencyPurge }) {
       });
     } else if (data.type === 'DIRECT_MESSAGE') {
       setAdminDirectMessages((prev) => {
-        const list = prev[data.targetUser] || [];
+        const rawTarget = data.targetUser || 'user';
+        const targetLower = rawTarget.toLowerCase();
+        const key = Object.keys(prev).find(k => k && k.toLowerCase() === targetLower) || rawTarget;
+        const list = prev[key] || [];
         if (list.some((m) => m.id === data.message.id || (m.sender === data.message.sender && m.text === data.message.text))) return prev;
 
         let remaining = list;
         if (data.isGhostMode || isGhostMode) {
           remaining = list.filter((m) => m.status !== 'seen');
         }
+        const newList = [...remaining, data.message];
         return {
           ...prev,
-          [data.targetUser]: [...remaining, data.message]
+          [key]: newList,
+          [targetLower]: newList
         };
       });
+
+      if (data.message && data.message.sender && data.message.sender !== 'Admin') {
+        const senderName = data.message.sender;
+        setUsersList(prev => {
+          if (prev.some(u => u.username.toLowerCase() === senderName.toLowerCase())) return prev;
+          const newUser = {
+            id: 'usr-' + Date.now(),
+            username: senderName,
+            passkey: '****',
+            role: 'User',
+            status: 'Active',
+            created: '2026-07-26'
+          };
+          const updated = [...prev, newUser];
+          localStorage.setItem('seccom_users_list', JSON.stringify(updated));
+          return updated;
+        });
+      }
+
       if (activeTab === 'chat') {
         const currentTarget = authRole === 'admin' ? selectedChatUser : activeUser?.username;
-        if (currentTarget === data.targetUser) {
+        if (currentTarget && currentTarget.toLowerCase() === (data.targetUser || '').toLowerCase()) {
           setTimeout(() => markDirectMessagesAsSeen(data.targetUser), 300);
         }
       }
@@ -1823,15 +1893,18 @@ export default function SecComPortal({ onEmergencyPurge }) {
     };
 
     setAdminDirectMessages((prev) => {
-      const key = Object.keys(prev).find(k => k.toLowerCase() === target.toLowerCase()) || target;
+      const targetLower = target.toLowerCase();
+      const key = Object.keys(prev).find(k => k && k.toLowerCase() === targetLower) || target;
       const list = prev[key] || [];
       let remaining = list;
       if (isGhostMode) {
         remaining = list.filter((m) => m.status !== 'seen');
       }
+      const newList = [...remaining, msg];
       const updated = {
         ...prev,
-        [key]: [...remaining, msg]
+        [key]: newList,
+        [targetLower]: newList
       };
       localStorage.setItem('seccom_direct_messages', JSON.stringify(updated));
       return updated;
@@ -1846,7 +1919,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
 
     if (isSupabaseConfigured && supabase) {
       supabase.from('direct_messages').insert({
-        target_user: target,
+        target_user: target.toLowerCase(),
         sender: msg.sender,
         cipher: msg.cipher,
         text: msg.text,
@@ -2993,7 +3066,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
                   <div className="flex-1 overflow-y-auto space-y-2 py-3 pr-1 font-mono">
                     {usersList.filter(u => u.username !== 'admin').map((u) => {
                       const isSelected = selectedChatUser === u.username;
-                      const userMsgs = adminDirectMessages[u.username] || [];
+                      const userMsgs = getDirectMessagesForUser(u.username);
                       const unreadCount = userMsgs.filter(m => m.sender === u.username && m.status !== 'seen').length;
                       return (
                         <div
@@ -3155,14 +3228,14 @@ export default function SecComPortal({ onEmergencyPurge }) {
 
                   {/* Message History */}
                   <div className="flex-1 p-5 overflow-y-auto space-y-4 font-mono text-xs bg-slate-950/60">
-                    {(adminDirectMessages[selectedChatUser] || []).length === 0 ? (
+                    {getDirectMessagesForUser(selectedChatUser).length === 0 ? (
                       <div className="h-full flex flex-col items-center justify-center text-slate-500 text-xs italic font-mono space-y-2">
                         <MessageSquare className="w-8 h-8 text-slate-700" />
                         <p>No messages in private thread with <strong className="text-amber-400">{selectedChatUser}</strong>.</p>
                         <p className="text-[10px] text-slate-600">Type below to start isolated conversation.</p>
                       </div>
                     ) : (
-                      (adminDirectMessages[selectedChatUser] || []).map((msg) => (
+                      getDirectMessagesForUser(selectedChatUser).map((msg) => (
                         <div
                           key={msg.id}
                           className={`p-3.5 rounded-2xl max-w-md border space-y-1.5 shadow-md relative ${
@@ -3410,14 +3483,14 @@ export default function SecComPortal({ onEmergencyPurge }) {
                 )}
 
                 <div className="flex-1 p-5 overflow-y-auto space-y-4 font-mono text-xs bg-slate-950/60">
-                  {(adminDirectMessages[activeUser?.username] || []).length === 0 ? (
+                  {getDirectMessagesForUser(activeUser?.username || 'user').length === 0 ? (
                     <div className="h-full flex flex-col items-center justify-center text-slate-500 text-xs italic font-mono space-y-2">
                       <Lock className="w-8 h-8 text-slate-700" />
                       <p>No messages in your private thread with Admin.</p>
                       <p className="text-[10px] text-slate-600">Send a message below to reach Admin directly.</p>
                     </div>
                   ) : (
-                    (adminDirectMessages[activeUser?.username] || []).map((msg) => (
+                    getDirectMessagesForUser(activeUser?.username || 'user').map((msg) => (
                       <div
                         key={msg.id}
                         className={`p-3.5 rounded-2xl max-w-md border space-y-1.5 shadow-md relative ${
