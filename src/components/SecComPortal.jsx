@@ -223,6 +223,31 @@ export default function SecComPortal({ onEmergencyPurge }) {
     } catch {}
   }, [pinnedMessages]);
 
+  // STEGANOGRAPHY VAULT STATE
+  const [stegoVaultList, setStegoVaultList] = useState(() => {
+    try {
+      const saved = localStorage.getItem('seccom_stego_vault');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [
+      {
+        id: 'stego-demo-1',
+        title: 'Alpha Ops Stego Payload',
+        created: formatTimestamp('2026-07-28T20:45:00'),
+        isPasswordProtected: true,
+        passwordHint: 'AES-256-GCM Password Key',
+        dataUrl: '',
+        rawPayload: 'SECCOM_PASS:AES-256-GCM.SecretPayload'
+      }
+    ];
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('seccom_stego_vault', JSON.stringify(stegoVaultList));
+    } catch {}
+  }, [stegoVaultList]);
+
   // LIVE 1-SECOND TICKING EFFECT FOR SELF-DESTRUCT TIMERS & VIEW-ONCE BURNING
   useEffect(() => {
     const timer = setInterval(() => {
@@ -312,6 +337,25 @@ export default function SecComPortal({ onEmergencyPurge }) {
     }, 1000);
 
     return () => clearInterval(timer);
+  }, []);
+
+  // SCREEN OFF / DEVICE LOCK / TAB INVISIBILITY PANIC RESET
+  useEffect(() => {
+    const handleScreenOffOrLock = () => {
+      if (document.hidden || document.visibilityState === 'hidden') {
+        setAuthRole('unauthenticated');
+        setActiveUser(null);
+        setActiveTab('chat');
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleScreenOffOrLock);
+    window.addEventListener('pagehide', handleScreenOffOrLock);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleScreenOffOrLock);
+      window.removeEventListener('pagehide', handleScreenOffOrLock);
+    };
   }, []);
 
   // REALTIME ADMIN BROADCAST & BURN NOTE STATE
@@ -1678,25 +1722,25 @@ export default function SecComPortal({ onEmergencyPurge }) {
       isRevealed: false
     };
 
+    setRoomMessages((prev) => ({
+      ...prev,
+      [selectedRoom]: [...(prev[selectedRoom] || []), msg]
+    }));
+
+    emitRealtimeSync({
+      type: 'ROOM_MESSAGE',
+      room: selectedRoom,
+      message: msg
+    });
+
     if (isSupabaseConfigured && supabase) {
-      await supabase.from('room_messages').insert({
+      supabase.from('room_messages').insert({
         room: selectedRoom,
         sender: msg.sender,
         cipher: msg.cipher,
         text: msg.text,
         auto_burn: msg.autoBurn
-      });
-    } else {
-      setRoomMessages((prev) => ({
-        ...prev,
-        [selectedRoom]: [...(prev[selectedRoom] || []), msg]
-      }));
-
-      emitRealtimeSync({
-        type: 'ROOM_MESSAGE',
-        room: selectedRoom,
-        message: msg
-      });
+      }).then(() => {}).catch((err) => console.warn('Supabase room message insert info:', err));
     }
 
     if (autoBurnSeconds !== 'none') {
@@ -1709,36 +1753,36 @@ export default function SecComPortal({ onEmergencyPurge }) {
 
   // DESTROY INDIVIDUAL ROOM MESSAGE
   const handleDestroyRoomMessage = async (room, messageId) => {
-    if (isSupabaseConfigured && supabase) {
-      await supabase.from('room_messages').delete().eq('id', messageId);
-    } else {
-      setRoomMessages((prev) => ({
-        ...prev,
-        [room]: (prev[room] || []).filter((m) => m.id !== messageId)
-      }));
+    setRoomMessages((prev) => ({
+      ...prev,
+      [room]: (prev[room] || []).filter((m) => m.id !== messageId)
+    }));
 
-      emitRealtimeSync({
-        type: 'DESTROY_ROOM_MESSAGE',
-        room: room,
-        messageId: messageId
-      });
+    emitRealtimeSync({
+      type: 'DESTROY_ROOM_MESSAGE',
+      room: room,
+      messageId: messageId
+    });
+
+    if (isSupabaseConfigured && supabase) {
+      supabase.from('room_messages').delete().eq('id', messageId).then(() => {}).catch(() => {});
     }
   };
 
   // PURGE ALL MESSAGES IN CURRENT ROOM
   const handlePurgeAllRoomMessages = async (room) => {
-    if (isSupabaseConfigured && supabase) {
-      await supabase.from('room_messages').delete().eq('room', room);
-    } else {
-      setRoomMessages((prev) => ({
-        ...prev,
-        [room]: []
-      }));
+    setRoomMessages((prev) => ({
+      ...prev,
+      [room]: []
+    }));
 
-      emitRealtimeSync({
-        type: 'PURGE_ROOM_MESSAGES',
-        room: room
-      });
+    emitRealtimeSync({
+      type: 'PURGE_ROOM_MESSAGES',
+      room: room
+    });
+
+    if (isSupabaseConfigured && supabase) {
+      supabase.from('room_messages').delete().eq('room', room).then(() => {}).catch(() => {});
     }
   };
 
@@ -1779,15 +1823,18 @@ export default function SecComPortal({ onEmergencyPurge }) {
     };
 
     setAdminDirectMessages((prev) => {
-      const list = prev[target] || [];
+      const key = Object.keys(prev).find(k => k.toLowerCase() === target.toLowerCase()) || target;
+      const list = prev[key] || [];
       let remaining = list;
       if (isGhostMode) {
         remaining = list.filter((m) => m.status !== 'seen');
       }
-      return {
+      const updated = {
         ...prev,
-        [target]: [...remaining, msg]
+        [key]: [...remaining, msg]
       };
+      localStorage.setItem('seccom_direct_messages', JSON.stringify(updated));
+      return updated;
     });
 
     emitRealtimeSync({
@@ -1798,13 +1845,13 @@ export default function SecComPortal({ onEmergencyPurge }) {
     });
 
     if (isSupabaseConfigured && supabase) {
-      await supabase.from('direct_messages').insert({
+      supabase.from('direct_messages').insert({
         target_user: target,
         sender: msg.sender,
         cipher: msg.cipher,
         text: msg.text,
         auto_burn: msg.autoBurn
-      });
+      }).then(() => {}).catch((err) => console.warn('Supabase direct message insert info:', err));
     }
 
     scrollToBottom();
@@ -2285,14 +2332,85 @@ export default function SecComPortal({ onEmergencyPurge }) {
       }
       const dataUrl = hideTextInCanvas(canvasEncodeRef.current, payloadToEmbed);
       setEncodedResultDataUrl(dataUrl);
+
+      const newStegoRecord = {
+        id: 'stego-' + Date.now(),
+        title: encodeSecretText.substring(0, 24) + (encodeSecretText.length > 24 ? '...' : ''),
+        created: formatTimestamp(),
+        isPasswordProtected: !!encodePassword.trim(),
+        passwordHint: encodePassword.trim() ? `AES-256-GCM Key ("${encodePassword.trim().substring(0, 3)}***")` : 'Open Key (Unencrypted)',
+        dataUrl: dataUrl,
+        rawPayload: payloadToEmbed
+      };
+
+      setStegoVaultList((prev) => [newStegoRecord, ...prev]);
+
+      if (isSupabaseConfigured && supabase) {
+        supabase.from('room_messages').insert({
+          room: 'SYS_STEGO_VAULT',
+          sender: activeUser?.username || 'user',
+          cipher: newStegoRecord.id,
+          text: JSON.stringify(newStegoRecord)
+        }).then(() => {}).catch(() => {});
+      }
+
       setEncodeStatus(
         encodePassword.trim()
-          ? '🔒 Encrypted with password & embedded in image pixels successfully! Click Download below.'
-          : '✅ Secret payload embedded in image pixels successfully! Click Download below.'
+          ? '🔒 Encrypted with password & stored in vault / image pixels! Click Download below.'
+          : '✅ Secret payload embedded in image pixels & saved to vault! Click Download below.'
       );
     } catch (err) {
       alert(err.message);
     }
+  };
+
+  const handleDeleteStegoRecord = async (stegoId) => {
+    setStegoVaultList((prev) => {
+      const updated = prev.filter((item) => item.id !== stegoId);
+      localStorage.setItem('seccom_stego_vault', JSON.stringify(updated));
+      return updated;
+    });
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('room_messages').delete().eq('room', 'SYS_STEGO_VAULT').eq('cipher', stegoId).catch(() => {});
+        await supabase.from('stego_images').delete().eq('id', stegoId).catch(() => {});
+      } catch (err) {
+        console.warn('Supabase delete stego record info:', err);
+      }
+    }
+  };
+
+  const handlePurgeAllStegoRecords = async () => {
+    setStegoVaultList([]);
+    localStorage.removeItem('seccom_stego_vault');
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('room_messages').delete().eq('room', 'SYS_STEGO_VAULT').catch(() => {});
+        await supabase.from('stego_images').delete().neq('id', '00000000-0000-0000-0000-000000000000').catch(() => {});
+      } catch (err) {
+        console.warn('Supabase purge stego records info:', err);
+      }
+    }
+  };
+
+  const handleLoadStegoToDecoder = (item) => {
+    if (!item.dataUrl) return;
+    const img = new Image();
+    img.onload = () => {
+      if (!canvasDecodeRef.current) return;
+      const canvas = canvasDecodeRef.current;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.imageSmoothingEnabled = false;
+      const nw = img.naturalWidth || img.width || 300;
+      const nh = img.naturalHeight || img.height || 180;
+      canvas.width = nw;
+      canvas.height = nh;
+      ctx.drawImage(img, 0, 0, nw, nh);
+      setExtractedSecretText(`🖼️ Stego Image "${item.title}" loaded to decoder. Click "Extract Secret from Image" below.`);
+    };
+    img.src = item.dataUrl;
   };
 
   const handleDownloadStegoImage = () => {
@@ -4741,6 +4859,86 @@ export default function SecComPortal({ onEmergencyPurge }) {
               {extractedSecretText && (
                 <div className="p-3.5 bg-slate-950 rounded-xl border border-emerald-500/40 text-xs font-mono text-emerald-200 animate-in fade-in select-all break-all">
                   {extractedSecretText}
+                </div>
+              )}
+            </div>
+
+            {/* BOTTOM CARD: STORED STEGANOGRAPHIC IMAGES & KEY VAULT (WITH DB PURGE) */}
+            <div className="bg-slate-900/80 rounded-2xl p-6 border border-cyan-500/30 shadow-2xl space-y-4 col-span-1 lg:col-span-2">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-3 flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 rounded-xl bg-purple-950 border border-purple-500/50 text-purple-400">
+                    <Key className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h2 className="font-mono font-bold text-base text-slate-100">Stored Steganographic Images & Key Vault</h2>
+                    <p className="text-[10px] text-slate-400 font-mono">View saved stego images, security keys, & database purge controls</p>
+                  </div>
+                </div>
+
+                {stegoVaultList.length > 0 && (
+                  <button
+                    onClick={handlePurgeAllStegoRecords}
+                    className="px-3.5 py-1.5 rounded-lg bg-rose-950 hover:bg-rose-900 border border-rose-500/50 text-rose-300 font-mono text-xs flex items-center gap-1.5 transition-all shadow-md cursor-pointer"
+                  >
+                    <Flame className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Purge All Stego Data (DB & Vault)</span>
+                  </button>
+                )}
+              </div>
+
+              {stegoVaultList.length === 0 ? (
+                <div className="p-8 text-center text-slate-500 text-xs font-mono italic bg-slate-950/60 rounded-xl border border-slate-800">
+                  No stored steganographic images in vault. Create a stego image above to save it into database vault.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {stegoVaultList.map((item) => (
+                    <div key={item.id} className="p-4 rounded-xl bg-slate-950 border border-cyan-500/30 hover:border-cyan-500/60 transition-all space-y-3 shadow-lg">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-mono font-bold text-cyan-300 truncate">{item.title || 'Untitled Stego Payload'}</span>
+                        <span className="text-[10px] font-mono text-slate-500">{item.created}</span>
+                      </div>
+
+                      {item.dataUrl && (
+                        <div className="bg-slate-900 p-1 rounded-lg border border-slate-800 flex justify-center">
+                          <img src={item.dataUrl} alt={item.title} className="max-h-28 rounded object-contain" />
+                        </div>
+                      )}
+
+                      <div className="space-y-1 text-[11px] font-mono">
+                        <div className="flex items-center gap-1.5 text-amber-300">
+                          <Key className="w-3 h-3 text-amber-400 shrink-0" />
+                          <span>Key Details: {item.passwordHint}</span>
+                        </div>
+                        <div className="text-slate-400 flex items-center gap-1">
+                          <Lock className="w-3 h-3 text-purple-400 shrink-0" />
+                          <span>Status: {item.isPasswordProtected ? '🔒 Encrypted (AES-256-GCM)' : '🔓 Plaintext LSB'}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 pt-2 border-t border-slate-800/80">
+                        {item.dataUrl && (
+                          <button
+                            onClick={() => handleLoadStegoToDecoder(item)}
+                            className="flex-1 py-1.5 rounded-lg bg-emerald-950 hover:bg-emerald-900 border border-emerald-500/50 text-emerald-300 font-mono text-[11px] font-bold flex items-center justify-center gap-1 transition-all cursor-pointer"
+                          >
+                            <FileSearch className="w-3 h-3" />
+                            <span>Load Decoder</span>
+                          </button>
+                        )}
+
+                        <button
+                          onClick={() => handleDeleteStegoRecord(item.id)}
+                          className="px-2.5 py-1.5 rounded-lg bg-rose-950/80 hover:bg-rose-900 border border-rose-500/50 text-rose-300 font-mono text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer"
+                          title="Delete this stego image & key data from database"
+                        >
+                          <Trash2 className="w-3 h-3 text-rose-400" />
+                          <span>Delete</span>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
