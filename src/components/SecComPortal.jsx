@@ -179,12 +179,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
   // REALTIME ADMIN-USER DIRECT CHAT STATE & SELF-DESTRUCT TIMERS
   const adminChatEndRef = useRef(null);
   const userChatEndRef = useRef(null);
-  const adminChatContainerRef = useRef(null);
-  const userChatContainerRef = useRef(null);
   const prevChatTargetRef = useRef(null);
-
-  const [hasUnreadBelowAdmin, setHasUnreadBelowAdmin] = useState(false);
-  const [hasUnreadBelowUser, setHasUnreadBelowUser] = useState(false);
 
   const [selectedChatUser, setSelectedChatUser] = useState('user');
   const [adminChatPerspective, setAdminChatPerspective] = useState('Admin');
@@ -805,18 +800,12 @@ export default function SecComPortal({ onEmergencyPurge }) {
             } else {
               newList = [...list, msgObj];
             }
-            const updated = {
+            return {
               ...prev,
               [key]: newList,
               [targetLower]: newList
             };
-            try {
-              localStorage.setItem('seccom_direct_messages', JSON.stringify(updated));
-            } catch {}
-            return updated;
           });
-
-          triggerAutoScrollOrDot();
 
           if (m.sender && m.sender !== 'Admin') {
             const senderName = m.sender;
@@ -965,18 +954,12 @@ export default function SecComPortal({ onEmergencyPurge }) {
           remaining = list.filter((m) => m.status !== 'seen');
         }
         const newList = [...remaining, data.message];
-        const updated = {
+        return {
           ...prev,
           [key]: newList,
           [targetLower]: newList
         };
-        try {
-          localStorage.setItem('seccom_direct_messages', JSON.stringify(updated));
-        } catch {}
-        return updated;
       });
-
-      triggerAutoScrollOrDot();
 
       if (data.message && data.message.sender && data.message.sender !== 'Admin') {
         const senderName = data.message.sender;
@@ -1955,58 +1938,9 @@ export default function SecComPortal({ onEmergencyPurge }) {
 
   const scrollToBottom = () => {
     setTimeout(() => {
-      if (adminChatContainerRef.current) {
-        adminChatContainerRef.current.scrollTop = adminChatContainerRef.current.scrollHeight;
-      } else {
-        adminChatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-      }
-      if (userChatContainerRef.current) {
-        userChatContainerRef.current.scrollTop = userChatContainerRef.current.scrollHeight;
-      } else {
-        userChatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-      }
-      setHasUnreadBelowAdmin(false);
-      setHasUnreadBelowUser(false);
-    }, 60);
-  };
-
-  const handleAdminChatScroll = () => {
-    if (!adminChatContainerRef.current) return;
-    const { scrollTop, scrollHeight, clientHeight } = adminChatContainerRef.current;
-    if (scrollHeight - scrollTop - clientHeight < 50) {
-      setHasUnreadBelowAdmin(false);
-    }
-  };
-
-  const handleUserChatScroll = () => {
-    if (!userChatContainerRef.current) return;
-    const { scrollTop, scrollHeight, clientHeight } = userChatContainerRef.current;
-    if (scrollHeight - scrollTop - clientHeight < 50) {
-      setHasUnreadBelowUser(false);
-    }
-  };
-
-  const triggerAutoScrollOrDot = () => {
-    setTimeout(() => {
-      if (adminChatContainerRef.current) {
-        const { scrollTop, scrollHeight, clientHeight } = adminChatContainerRef.current;
-        if (scrollHeight - scrollTop - clientHeight < 150) {
-          adminChatContainerRef.current.scrollTop = adminChatContainerRef.current.scrollHeight;
-          setHasUnreadBelowAdmin(false);
-        } else {
-          setHasUnreadBelowAdmin(true);
-        }
-      }
-      if (userChatContainerRef.current) {
-        const { scrollTop, scrollHeight, clientHeight } = userChatContainerRef.current;
-        if (scrollHeight - scrollTop - clientHeight < 150) {
-          userChatContainerRef.current.scrollTop = userChatContainerRef.current.scrollHeight;
-          setHasUnreadBelowUser(false);
-        } else {
-          setHasUnreadBelowUser(true);
-        }
-      }
-    }, 60);
+      adminChatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      userChatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, 80);
   };
 
   // ADMIN-USER REALTIME DIRECT CHAT TRANSMISSION
@@ -3373,11 +3307,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
                   )}
 
                   {/* Message History */}
-                  <div
-                    ref={adminChatContainerRef}
-                    onScroll={handleAdminChatScroll}
-                    className="flex-1 p-5 overflow-y-auto space-y-4 font-mono text-xs bg-slate-950/60"
-                  >
+                  <div className="flex-1 p-5 overflow-y-auto space-y-4 font-mono text-xs bg-slate-950/60">
                     {getDirectMessagesForUser(selectedChatUser).length === 0 ? (
                       <div className="h-full flex flex-col items-center justify-center text-slate-500 text-xs italic font-mono space-y-2">
                         <MessageSquare className="w-8 h-8 text-slate-700" />
@@ -3516,13 +3446,10 @@ export default function SecComPortal({ onEmergencyPurge }) {
                   {/* Floating Scroll to Bottom Down-Arrow Button */}
                   <button
                     onClick={scrollToBottom}
-                    className="absolute bottom-20 right-6 z-30 p-2.5 rounded-full bg-slate-900/90 hover:bg-amber-950 text-amber-400 border border-amber-500/50 shadow-[0_4px_20px_rgba(0,0,0,0.8)] backdrop-blur-md transition-all hover:scale-110 active:scale-95 group cursor-pointer relative"
+                    className="absolute bottom-20 right-6 z-30 p-2.5 rounded-full bg-slate-900/90 hover:bg-amber-950 text-amber-400 border border-amber-500/50 shadow-[0_4px_20px_rgba(0,0,0,0.8)] backdrop-blur-md transition-all hover:scale-110 active:scale-95 group cursor-pointer"
                     title="Scroll to bottom of chat"
                   >
                     <ChevronDown className="w-4 h-4 text-amber-400 group-hover:translate-y-0.5 transition-transform" />
-                    {hasUnreadBelowAdmin && (
-                      <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-rose-500 rounded-full border-2 border-slate-950 shadow-[0_0_10px_rgba(244,63,94,0.9)] animate-bounce" />
-                    )}
                   </button>
 
                   {/* Input */}
@@ -3635,11 +3562,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
                   </div>
                 )}
 
-                <div
-                  ref={userChatContainerRef}
-                  onScroll={handleUserChatScroll}
-                  className="flex-1 p-5 overflow-y-auto space-y-4 font-mono text-xs bg-slate-950/60"
-                >
+                <div className="flex-1 p-5 overflow-y-auto space-y-4 font-mono text-xs bg-slate-950/60">
                   {getDirectMessagesForUser(activeUser?.username || 'user').length === 0 ? (
                     <div className="h-full flex flex-col items-center justify-center text-slate-500 text-xs italic font-mono space-y-2">
                       <Lock className="w-8 h-8 text-slate-700" />
@@ -3756,13 +3679,10 @@ export default function SecComPortal({ onEmergencyPurge }) {
                 {/* Floating Scroll to Bottom Down-Arrow Button */}
                 <button
                   onClick={scrollToBottom}
-                  className="absolute bottom-20 right-6 z-30 p-2.5 rounded-full bg-slate-900/90 hover:bg-cyan-950 text-cyan-400 border border-cyan-500/50 shadow-[0_4px_20px_rgba(0,0,0,0.8)] backdrop-blur-md transition-all hover:scale-110 active:scale-95 group cursor-pointer relative"
+                  className="absolute bottom-20 right-6 z-30 p-2.5 rounded-full bg-slate-900/90 hover:bg-cyan-950 text-cyan-400 border border-cyan-500/50 shadow-[0_4px_20px_rgba(0,0,0,0.8)] backdrop-blur-md transition-all hover:scale-110 active:scale-95 group cursor-pointer"
                   title="Scroll to bottom of chat"
                 >
                   <ChevronDown className="w-4 h-4 text-cyan-400 group-hover:translate-y-0.5 transition-transform" />
-                  {hasUnreadBelowUser && (
-                    <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-rose-500 rounded-full border-2 border-slate-950 shadow-[0_0_10px_rgba(244,63,94,0.9)] animate-bounce" />
-                  )}
                 </button>
 
                 <div className="p-4 bg-slate-950 border-t border-slate-800 flex items-center gap-3">
