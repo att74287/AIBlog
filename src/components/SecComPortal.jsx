@@ -211,13 +211,26 @@ export default function SecComPortal({ onEmergencyPurge }) {
   });
   const [directMsgInput, setDirectMsgInput] = useState('');
 
+  const [hasUnreadDotAdmin, setHasUnreadDotAdmin] = useState(false);
+  const [hasUnreadDotUser, setHasUnreadDotUser] = useState(false);
+
   // HELPER TO RETRIEVE DIRECT MESSAGES CASE-INSENSITIVELY FOR ANY TARGET USERNAME
   const getDirectMessagesForUser = (username) => {
     if (!username) return [];
     const targetLower = username.toLowerCase();
-    const key = Object.keys(adminDirectMessages).find(k => k && k.toLowerCase() === targetLower);
-    if (key) return adminDirectMessages[key];
-    return adminDirectMessages[username] || [];
+    const matchedKeys = Object.keys(adminDirectMessages).filter(k => k && k.toLowerCase() === targetLower);
+    if (matchedKeys.length === 0) return adminDirectMessages[username] || [];
+
+    const allMsgs = [];
+    matchedKeys.forEach(k => {
+      (adminDirectMessages[k] || []).forEach(msg => {
+        if (!allMsgs.some(m => m.id === msg.id || (m.sender === msg.sender && m.text === msg.text))) {
+          allMsgs.push(msg);
+        }
+      });
+    });
+    allMsgs.sort((a, b) => (a.createdTimestamp || 0) - (b.createdTimestamp || 0));
+    return allMsgs;
   };
 
   useEffect(() => {
@@ -941,6 +954,8 @@ export default function SecComPortal({ onEmergencyPurge }) {
           [data.room]: [...roomMsgs, data.message]
         };
       });
+      setHasUnreadDotAdmin(true);
+      setHasUnreadDotUser(true);
     } else if (data.type === 'DIRECT_MESSAGE') {
       setAdminDirectMessages((prev) => {
         const rawTarget = data.targetUser || 'user';
@@ -962,6 +977,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
       });
 
       if (data.message && data.message.sender && data.message.sender !== 'Admin') {
+        setHasUnreadDotAdmin(true);
         const senderName = data.message.sender;
         setUsersList(prev => {
           if (prev.some(u => u.username.toLowerCase() === senderName.toLowerCase())) return prev;
@@ -977,6 +993,8 @@ export default function SecComPortal({ onEmergencyPurge }) {
           localStorage.setItem('seccom_users_list', JSON.stringify(updated));
           return updated;
         });
+      } else {
+        setHasUnreadDotUser(true);
       }
 
       if (activeTab === 'chat') {
@@ -1938,8 +1956,11 @@ export default function SecComPortal({ onEmergencyPurge }) {
 
   const scrollToBottom = () => {
     setTimeout(() => {
+      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
       adminChatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
       userChatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      setHasUnreadDotAdmin(false);
+      setHasUnreadDotUser(false);
     }, 80);
   };
 
@@ -3443,13 +3464,16 @@ export default function SecComPortal({ onEmergencyPurge }) {
                     <div ref={adminChatEndRef} />
                   </div>
 
-                  {/* Floating Scroll to Bottom Down-Arrow Button */}
+                  {/* WhatsApp-Style Floating Scroll to Bottom Circle Button */}
                   <button
                     onClick={scrollToBottom}
-                    className="absolute bottom-20 right-6 z-30 p-2.5 rounded-full bg-slate-900/90 hover:bg-amber-950 text-amber-400 border border-amber-500/50 shadow-[0_4px_20px_rgba(0,0,0,0.8)] backdrop-blur-md transition-all hover:scale-110 active:scale-95 group cursor-pointer"
+                    className="absolute bottom-20 right-4 z-30 w-9 h-9 rounded-full bg-slate-900/95 hover:bg-amber-950 text-amber-400 border border-amber-500/50 shadow-[0_4px_16px_rgba(0,0,0,0.8)] backdrop-blur-md transition-all hover:scale-110 active:scale-95 group cursor-pointer flex items-center justify-center relative"
                     title="Scroll to bottom of chat"
                   >
-                    <ChevronDown className="w-4 h-4 text-amber-400 group-hover:translate-y-0.5 transition-transform" />
+                    <ChevronDown className="w-5 h-5 text-amber-400 group-hover:translate-y-0.5 transition-transform" />
+                    {hasUnreadDotAdmin && (
+                      <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-rose-500 rounded-full border-2 border-slate-950 shadow-[0_0_10px_rgba(244,63,94,0.9)] animate-bounce" />
+                    )}
                   </button>
 
                   {/* Input */}
@@ -3676,13 +3700,16 @@ export default function SecComPortal({ onEmergencyPurge }) {
                   <div ref={userChatEndRef} />
                 </div>
 
-                {/* Floating Scroll to Bottom Down-Arrow Button */}
+                {/* WhatsApp-Style Floating Scroll to Bottom Circle Button */}
                 <button
                   onClick={scrollToBottom}
-                  className="absolute bottom-20 right-6 z-30 p-2.5 rounded-full bg-slate-900/90 hover:bg-cyan-950 text-cyan-400 border border-cyan-500/50 shadow-[0_4px_20px_rgba(0,0,0,0.8)] backdrop-blur-md transition-all hover:scale-110 active:scale-95 group cursor-pointer"
+                  className="absolute bottom-20 right-4 z-30 w-9 h-9 rounded-full bg-slate-900/95 hover:bg-cyan-950 text-cyan-400 border border-cyan-500/50 shadow-[0_4px_16px_rgba(0,0,0,0.8)] backdrop-blur-md transition-all hover:scale-110 active:scale-95 group cursor-pointer flex items-center justify-center relative"
                   title="Scroll to bottom of chat"
                 >
-                  <ChevronDown className="w-4 h-4 text-cyan-400 group-hover:translate-y-0.5 transition-transform" />
+                  <ChevronDown className="w-5 h-5 text-cyan-400 group-hover:translate-y-0.5 transition-transform" />
+                  {hasUnreadDotUser && (
+                    <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-rose-500 rounded-full border-2 border-slate-950 shadow-[0_0_10px_rgba(244,63,94,0.9)] animate-bounce" />
+                  )}
                 </button>
 
                 <div className="p-4 bg-slate-950 border-t border-slate-800 flex items-center gap-3">
