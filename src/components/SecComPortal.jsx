@@ -428,52 +428,98 @@ export default function SecComPortal({ onEmergencyPurge }) {
 
       // 2. Fetch Room Messages
       const fetchRoomMessages = async () => {
-        const { data, error } = await supabase.from('room_messages').select('*').order('created_at', { ascending: true });
-        if (!error && data) {
-          const grouped = {};
-          data.forEach(m => {
-            if (!grouped[m.room]) grouped[m.room] = [];
-            grouped[m.room].push({
-              id: m.id,
-              sender: m.sender,
-              cipher: m.cipher,
-              text: m.text,
-              time: m.created_at ? formatTimestamp(m.created_at) : formatTimestamp(),
-              autoBurn: m.auto_burn
+        try {
+          const { data, error } = await supabase.from('room_messages').select('*').order('created_at', { ascending: true });
+          if (!error && data) {
+            const grouped = {};
+            data.forEach(m => {
+              if (!m.room || m.room.startsWith('SYS_') || m.room === 'GLOBAL_BROADCAST') return;
+              if (!grouped[m.room]) grouped[m.room] = [];
+              grouped[m.room].push({
+                id: m.id,
+                sender: m.sender,
+                cipher: m.cipher,
+                text: m.text,
+                time: m.created_at ? formatTimestamp(m.created_at) : formatTimestamp(),
+                autoBurn: m.auto_burn
+              });
             });
-          });
-          setRoomMessages(prev => ({ ...prev, ...grouped }));
+            setRoomMessages(prev => {
+              const updated = { ...prev };
+              Object.keys(grouped).forEach(r => {
+                const existing = updated[r] || [];
+                const merged = [...existing];
+                grouped[r].forEach(item => {
+                  const idx = merged.findIndex(e => e.id === item.id || (e.sender === item.sender && e.text === item.text));
+                  if (idx >= 0) {
+                    merged[idx] = { ...merged[idx], ...item };
+                  } else {
+                    merged.push(item);
+                  }
+                });
+                updated[r] = merged;
+              });
+              return updated;
+            });
+          }
+        } catch (err) {
+          console.warn('fetchRoomMessages error:', err);
         }
       };
 
       // 3. Fetch Direct Messages (with direct is_pinned backup)
       const fetchDirectMessages = async () => {
-        const { data, error } = await supabase.from('direct_messages').select('*').order('created_at', { ascending: true });
-        if (!error && data) {
-          const grouped = {};
-          const pinnedFromDirect = {};
-          data.forEach(m => {
-            if (!grouped[m.target_user]) grouped[m.target_user] = [];
-            const msgObj = {
-              id: m.id,
-              sender: m.sender,
-              cipher: m.cipher,
-              text: m.text,
-              time: m.created_at ? formatTimestamp(m.created_at) : formatTimestamp(),
-              status: m.status || 'delivered',
-              isGhost: m.is_ghost || false,
-              isPinned: m.is_pinned || false
-            };
-            grouped[m.target_user].push(msgObj);
-            if (m.is_pinned) {
-              pinnedFromDirect[m.target_user] = msgObj;
-              pinnedFromDirect[m.target_user.toLowerCase()] = msgObj;
+        try {
+          const { data, error } = await supabase.from('direct_messages').select('*').order('created_at', { ascending: true });
+          if (!error && data) {
+            const grouped = {};
+            const pinnedFromDirect = {};
+            data.forEach(m => {
+              const rawTarget = m.target_user || 'user';
+              const targetLower = rawTarget.toLowerCase();
+              if (!grouped[rawTarget]) grouped[rawTarget] = [];
+              const msgObj = {
+                id: m.id,
+                sender: m.sender,
+                cipher: m.cipher,
+                text: m.text,
+                time: m.created_at ? formatTimestamp(m.created_at) : formatTimestamp(),
+                status: m.status || 'delivered',
+                isGhost: m.is_ghost || false,
+                isPinned: m.is_pinned || false
+              };
+              grouped[rawTarget].push(msgObj);
+              if (m.is_pinned) {
+                pinnedFromDirect[rawTarget] = msgObj;
+                pinnedFromDirect[targetLower] = msgObj;
+              }
+            });
+            setAdminDirectMessages(prev => {
+              const updated = { ...prev };
+              Object.keys(grouped).forEach(targetUser => {
+                const targetLower = targetUser.toLowerCase();
+                const matchedKey = Object.keys(updated).find(k => k && k.toLowerCase() === targetLower) || targetUser;
+                const existingList = updated[matchedKey] || [];
+                const merged = [...existingList];
+                grouped[targetUser].forEach(item => {
+                  const idx = merged.findIndex(e => e.id === item.id || (e.sender === item.sender && e.text === item.text));
+                  if (idx >= 0) {
+                    merged[idx] = { ...merged[idx], ...item };
+                  } else {
+                    merged.push(item);
+                  }
+                });
+                updated[matchedKey] = merged;
+                updated[targetLower] = merged;
+              });
+              return updated;
+            });
+            if (Object.keys(pinnedFromDirect).length > 0) {
+              setPinnedMessages(prev => ({ ...prev, ...pinnedFromDirect }));
             }
-          });
-          setAdminDirectMessages(prev => ({ ...prev, ...grouped }));
-          if (Object.keys(pinnedFromDirect).length > 0) {
-            setPinnedMessages(prev => ({ ...prev, ...pinnedFromDirect }));
           }
+        } catch (err) {
+          console.warn('fetchDirectMessages error:', err);
         }
       };
 
@@ -852,8 +898,32 @@ export default function SecComPortal({ onEmergencyPurge }) {
         })
         .subscribe();
 
+      // Broadcast Mesh Channel for zero-latency cross-device messaging
+      const meshChannel = supabase.channel('seccom_mesh_sync')
+        .on('broadcast', { event: 'sync' }, (res) => {
+          if (res && res.payload) {
+            handleIncomingMessagePayload(res.payload);
+          }
+        })
+        .subscribe();
+
+      // 2.5-second auto-polling loop for uninterrupted background & mobile sync
+      const syncInterval = setInterval(() => {
+        fetchRoomMessages();
+        fetchDirectMessages();
+      }, 2500);
+
+      const handleFocusSync = () => {
+        fetchRoomMessages();
+        fetchDirectMessages();
+      };
+      window.addEventListener('focus', handleFocusSync);
+
       return () => {
         supabase.removeChannel(channel);
+        supabase.removeChannel(meshChannel);
+        clearInterval(syncInterval);
+        window.removeEventListener('focus', handleFocusSync);
       };
     }
   }, []);
@@ -1046,6 +1116,16 @@ export default function SecComPortal({ onEmergencyPurge }) {
     try {
       localStorage.setItem('seccom_sync_event', JSON.stringify(fullPayload));
     } catch {}
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        supabase.channel('seccom_mesh_sync').send({
+          type: 'broadcast',
+          event: 'sync',
+          payload: fullPayload
+        }).catch(() => {});
+      } catch {}
+    }
   };
 
   // E2EE Vault Messaging State
