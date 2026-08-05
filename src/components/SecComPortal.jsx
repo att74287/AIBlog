@@ -152,6 +152,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
   const [roomInput, setRoomInput] = useState('');
   const [roomSenderName, setRoomSenderName] = useState('user');
   const [autoBurnSeconds, setAutoBurnSeconds] = useState('none');
+  const [roomDeleteAfterView, setRoomDeleteAfterView] = useState(false);
 
   // GHOST MODE & ADMIN SECURITY AUDIT STATE
   const [adminSubTab, setAdminSubTab] = useState('users'); // 'users' | 'history' | 'alerts' | 'ips'
@@ -175,13 +176,17 @@ export default function SecComPortal({ onEmergencyPurge }) {
     } catch {}
   }, [loginHistory]);
 
-  // REALTIME ADMIN-USER DIRECT CHAT STATE
+  // REALTIME ADMIN-USER DIRECT CHAT STATE & SELF-DESTRUCT TIMERS
   const adminChatEndRef = useRef(null);
   const userChatEndRef = useRef(null);
   const prevChatTargetRef = useRef(null);
 
   const [selectedChatUser, setSelectedChatUser] = useState('user');
   const [adminChatPerspective, setAdminChatPerspective] = useState('Admin');
+  const [directAutoBurnSeconds, setDirectAutoBurnSeconds] = useState('none');
+  const [directDeleteAfterView, setDirectDeleteAfterView] = useState(false);
+  const [nowTimestamp, setNowTimestamp] = useState(Date.now());
+
   const [pinnedMessages, setPinnedMessages] = useState(() => {
     try {
       const saved = localStorage.getItem('seccom_pinned_messages');
@@ -217,6 +222,97 @@ export default function SecComPortal({ onEmergencyPurge }) {
       localStorage.setItem('seccom_pinned_messages', JSON.stringify(pinnedMessages));
     } catch {}
   }, [pinnedMessages]);
+
+  // LIVE 1-SECOND TICKING EFFECT FOR SELF-DESTRUCT TIMERS & VIEW-ONCE BURNING
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const now = Date.now();
+      setNowTimestamp(now);
+
+      // 1. Check Room Messages for expired autoBurn or revealed deleteAfterView
+      setRoomMessages((prev) => {
+        let changed = false;
+        const updated = { ...prev };
+
+        Object.keys(updated).forEach((room) => {
+          const list = updated[room] || [];
+          const filtered = list.filter((m) => {
+            if (m.autoBurn && typeof m.autoBurn === 'number') {
+              const createdMs = m.createdTimestamp || (m.time ? Date.parse(m.time) : now);
+              const elapsed = Math.floor((now - createdMs) / 1000);
+              if (elapsed >= m.autoBurn) {
+                changed = true;
+                if (isSupabaseConfigured && supabase) {
+                  supabase.from('room_messages').delete().eq('id', m.id).then(() => {}).catch(() => {});
+                }
+                return false;
+              }
+            }
+            if (m.deleteAfterView && m.isRevealed && m.revealedTimestamp) {
+              const elapsed = Math.floor((now - m.revealedTimestamp) / 1000);
+              if (elapsed >= 3) {
+                changed = true;
+                if (isSupabaseConfigured && supabase) {
+                  supabase.from('room_messages').delete().eq('id', m.id).then(() => {}).catch(() => {});
+                }
+                return false;
+              }
+            }
+            return true;
+          });
+
+          if (filtered.length !== list.length) {
+            updated[room] = filtered;
+          }
+        });
+
+        return changed ? updated : prev;
+      });
+
+      // 2. Check Direct Messages for expired autoBurn or revealed deleteAfterView
+      setAdminDirectMessages((prev) => {
+        let changed = false;
+        const updated = { ...prev };
+
+        Object.keys(updated).forEach((targetUser) => {
+          const list = updated[targetUser] || [];
+          const filtered = list.filter((m) => {
+            if (m.autoBurn && typeof m.autoBurn === 'number') {
+              const createdMs = m.createdTimestamp || (m.time ? Date.parse(m.time) : now);
+              const elapsed = Math.floor((now - createdMs) / 1000);
+              if (elapsed >= m.autoBurn) {
+                changed = true;
+                if (isSupabaseConfigured && supabase) {
+                  supabase.from('direct_messages').delete().eq('id', m.id).then(() => {}).catch(() => {});
+                }
+                return false;
+              }
+            }
+            if (m.deleteAfterView && m.isRevealed && m.revealedTimestamp) {
+              const elapsed = Math.floor((now - m.revealedTimestamp) / 1000);
+              if (elapsed >= 3) {
+                changed = true;
+                if (isSupabaseConfigured && supabase) {
+                  supabase.from('direct_messages').delete().eq('id', m.id).then(() => {}).catch(() => {});
+                }
+                return false;
+              }
+            }
+            return true;
+          });
+
+          if (filtered.length !== list.length) {
+            updated[targetUser] = filtered;
+          }
+        });
+
+        return changed ? updated : prev;
+      });
+
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, []);
 
   // REALTIME ADMIN BROADCAST & BURN NOTE STATE
   const [activeBroadcastNote, setActiveBroadcastNote] = useState(null);
@@ -1576,7 +1672,10 @@ export default function SecComPortal({ onEmergencyPurge }) {
       cipher: cipherPayload,
       text: currentInput,
       time: formatTimestamp(),
-      autoBurn: autoBurnSeconds !== 'none' ? parseInt(autoBurnSeconds, 10) : null
+      createdTimestamp: Date.now(),
+      autoBurn: autoBurnSeconds !== 'none' ? parseInt(autoBurnSeconds, 10) : null,
+      deleteAfterView: roomDeleteAfterView,
+      isRevealed: false
     };
 
     if (isSupabaseConfigured && supabase) {
@@ -1671,8 +1770,12 @@ export default function SecComPortal({ onEmergencyPurge }) {
       cipher: cipherPayload,
       text: currentInput,
       time: formatTimestamp(),
+      createdTimestamp: Date.now(),
       status: 'delivered',
-      isGhost: isGhostMode
+      isGhost: isGhostMode,
+      autoBurn: directAutoBurnSeconds !== 'none' ? parseInt(directAutoBurnSeconds, 10) : null,
+      deleteAfterView: directDeleteAfterView,
+      isRevealed: false
     };
 
     setAdminDirectMessages((prev) => {
@@ -1699,11 +1802,118 @@ export default function SecComPortal({ onEmergencyPurge }) {
         target_user: target,
         sender: msg.sender,
         cipher: msg.cipher,
-        text: msg.text
+        text: msg.text,
+        auto_burn: msg.autoBurn
       });
     }
 
     scrollToBottom();
+  };
+
+  // DESTROY INDIVIDUAL DIRECT MESSAGE
+  const handleDestroyDirectMessage = async (targetUser, messageId) => {
+    setAdminDirectMessages((prev) => {
+      const updatedList = (prev[targetUser] || []).filter((m) => m.id !== messageId);
+      const updated = { ...prev, [targetUser]: updatedList };
+      localStorage.setItem('seccom_direct_messages', JSON.stringify(updated));
+      return updated;
+    });
+
+    setPinnedMessages((prev) => {
+      if (prev[targetUser]?.id === messageId) {
+        const copy = { ...prev };
+        delete copy[targetUser];
+        delete copy[targetUser.toLowerCase()];
+        localStorage.setItem('seccom_pinned_messages', JSON.stringify(copy));
+        return copy;
+      }
+      return prev;
+    });
+
+    emitRealtimeSync({
+      type: 'DESTROY_DIRECT_MESSAGE',
+      targetUser: targetUser,
+      messageId: messageId
+    });
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('direct_messages').delete().eq('id', messageId).catch(() => {});
+      } catch (err) {
+        console.warn('Supabase delete direct message info:', err);
+      }
+    }
+  };
+
+  // PURGE ALL DIRECT MESSAGES FOR A USER
+  const handlePurgeAllDirectMessages = async (targetUser) => {
+    setAdminDirectMessages((prev) => {
+      const updated = { ...prev, [targetUser]: [] };
+      localStorage.setItem('seccom_direct_messages', JSON.stringify(updated));
+      return updated;
+    });
+
+    setPinnedMessages((prev) => {
+      const copy = { ...prev };
+      delete copy[targetUser];
+      delete copy[targetUser.toLowerCase()];
+      localStorage.setItem('seccom_pinned_messages', JSON.stringify(copy));
+      return copy;
+    });
+
+    emitRealtimeSync({
+      type: 'PURGE_DIRECT_MESSAGES',
+      targetUser: targetUser
+    });
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('direct_messages').delete().eq('target_user', targetUser).catch(() => {});
+      } catch (err) {
+        console.warn('Supabase purge direct messages info:', err);
+      }
+    }
+  };
+
+  // REVEAL & TRIGGER DELETE-AFTER-VIEW BURNING TIMER FOR MESSAGES
+  const handleRevealDeleteAfterViewMessage = (targetUserOrRoom, messageId, isRoom = false) => {
+    const revealedMs = Date.now();
+
+    if (isRoom) {
+      setRoomMessages((prev) => {
+        const list = prev[targetUserOrRoom] || [];
+        const updated = list.map((m) => {
+          if (m.id === messageId) {
+            return { ...m, isRevealed: true, revealedTimestamp: revealedMs };
+          }
+          return m;
+        });
+        return { ...prev, [targetUserOrRoom]: updated };
+      });
+      emitRealtimeSync({
+        type: 'REVEAL_MESSAGE',
+        room: targetUserOrRoom,
+        messageId: messageId,
+        revealedTimestamp: revealedMs
+      });
+    } else {
+      setAdminDirectMessages((prev) => {
+        const list = prev[targetUserOrRoom] || [];
+        const updated = list.map((m) => {
+          if (m.id === messageId) {
+            return { ...m, isRevealed: true, revealedTimestamp: revealedMs };
+          }
+          return m;
+        });
+        return { ...prev, [targetUserOrRoom]: updated };
+      });
+      emitRealtimeSync({
+        type: 'REVEAL_MESSAGE',
+        targetUser: targetUserOrRoom,
+        messageId: messageId,
+        revealedTimestamp: revealedMs
+      });
+    }
   };
 
   // Helper to retrieve pinned message for any target username (case-insensitive with fallback)
@@ -1950,41 +2160,6 @@ export default function SecComPortal({ onEmergencyPurge }) {
     setBroadcastInput('');
     setBroadcastStatus('✅ Broadcast Note sent to ALL connected operatives in real-time with timestamp!');
     setTimeout(() => setBroadcastStatus(''), 5000);
-  };
-
-  // DESTROY INDIVIDUAL DIRECT MESSAGE
-  const handleDestroyDirectMessage = async (targetUser, messageId) => {
-    if (isSupabaseConfigured && supabase) {
-      await supabase.from('direct_messages').delete().eq('id', messageId);
-    } else {
-      setAdminDirectMessages((prev) => ({
-        ...prev,
-        [targetUser]: (prev[targetUser] || []).filter((m) => m.id !== messageId)
-      }));
-
-      emitRealtimeSync({
-        type: 'DESTROY_DIRECT_MESSAGE',
-        targetUser: targetUser,
-        messageId: messageId
-      });
-    }
-  };
-
-  // PURGE ALL DIRECT MESSAGES FOR TARGET USER
-  const handlePurgeAllDirectMessages = async (targetUser) => {
-    if (isSupabaseConfigured && supabase) {
-      await supabase.from('direct_messages').delete().eq('target_user', targetUser);
-    } else {
-      setAdminDirectMessages((prev) => ({
-        ...prev,
-        [targetUser]: []
-      }));
-
-      emitRealtimeSync({
-        type: 'PURGE_DIRECT_MESSAGES',
-        targetUser: targetUser
-      });
-    }
   };
 
   // Handle Multi-Algorithm Encryption
@@ -2616,7 +2791,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
                   <span className="font-bold">🔒 Confidential Line: {activeUser?.username} ↔ Admin</span>
                 </div>
               ) : (
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2 flex-wrap">
                   <div className="flex items-center gap-1.5">
                     <span className="text-xs font-mono text-slate-400">Channel:</span>
                     {['#general-vault', '#alpha-squad'].map((room) => (
@@ -2634,9 +2809,42 @@ export default function SecComPortal({ onEmergencyPurge }) {
                     ))}
                   </div>
 
+                  {/* Room Self-Destruct Timer Dropdown Selector */}
+                  <div className="flex items-center gap-1 bg-slate-950 border border-amber-500/40 rounded-lg px-2.5 py-1.5">
+                    <Flame className="w-3.5 h-3.5 text-amber-400" />
+                    <select
+                      value={autoBurnSeconds}
+                      onChange={(e) => setAutoBurnSeconds(e.target.value)}
+                      className="bg-transparent text-xs font-mono text-amber-300 focus:outline-none cursor-pointer"
+                      title="Set Room Self-Destruction Timer for outbound messages"
+                    >
+                      <option value="none" className="bg-slate-900 text-slate-200">Timer: Off</option>
+                      <option value="5" className="bg-slate-900 text-amber-300">🔥 Burn in 5s</option>
+                      <option value="10" className="bg-slate-900 text-amber-300">🔥 Burn in 10s</option>
+                      <option value="30" className="bg-slate-900 text-amber-300">🔥 Burn in 30s</option>
+                      <option value="60" className="bg-slate-900 text-amber-300">🔥 Burn in 1m</option>
+                      <option value="300" className="bg-slate-900 text-amber-300">🔥 Burn in 5m</option>
+                      <option value="3600" className="bg-slate-900 text-amber-300">🔥 Burn in 1h</option>
+                    </select>
+                  </div>
+
+                  {/* Room Delete After View Toggle Button */}
+                  <button
+                    onClick={() => setRoomDeleteAfterView(!roomDeleteAfterView)}
+                    className={`px-3 py-1.5 rounded-lg border text-xs font-mono font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                      roomDeleteAfterView
+                        ? 'bg-purple-950/90 border-purple-500 text-purple-300 shadow-[0_0_15px_rgba(168,85,247,0.4)] animate-pulse'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                    title="Toggle Delete After View: Messages self-destruct 3s after recipient reveals & reads them"
+                  >
+                    <Eye className={`w-3.5 h-3.5 ${roomDeleteAfterView ? 'text-purple-400' : 'text-slate-400'}`} />
+                    <span>{roomDeleteAfterView ? '👁️ Delete After View: ON' : 'Delete After View: OFF'}</span>
+                  </button>
+
                   <button
                     onClick={() => handlePurgeAllRoomMessages(selectedRoom)}
-                    className="px-3 py-1.5 rounded-lg bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-500/40 text-xs font-mono flex items-center gap-1.5 transition-colors"
+                    className="px-3 py-1.5 rounded-lg bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-500/40 text-xs font-mono flex items-center gap-1.5 transition-colors cursor-pointer"
                   >
                     <Flame className="w-3.5 h-3.5 text-rose-400" />
                     <span>Purge Room</span>
@@ -2741,7 +2949,40 @@ export default function SecComPortal({ onEmergencyPurge }) {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {/* Direct Message Self-Destruct Timer Dropdown Selector */}
+                      <div className="flex items-center gap-1 bg-slate-950 border border-amber-500/40 rounded-lg px-2.5 py-1.5 font-mono text-xs">
+                        <Flame className="w-3.5 h-3.5 text-amber-400" />
+                        <select
+                          value={directAutoBurnSeconds}
+                          onChange={(e) => setDirectAutoBurnSeconds(e.target.value)}
+                          className="bg-transparent text-xs font-mono text-amber-300 focus:outline-none cursor-pointer"
+                          title="Set Direct Message Self-Destruction Timer for outbound messages"
+                        >
+                          <option value="none" className="bg-slate-900 text-slate-200">Timer: Off</option>
+                          <option value="5" className="bg-slate-900 text-amber-300">🔥 Burn in 5s</option>
+                          <option value="10" className="bg-slate-900 text-amber-300">🔥 Burn in 10s</option>
+                          <option value="30" className="bg-slate-900 text-amber-300">🔥 Burn in 30s</option>
+                          <option value="60" className="bg-slate-900 text-amber-300">🔥 Burn in 1m</option>
+                          <option value="300" className="bg-slate-900 text-amber-300">🔥 Burn in 5m</option>
+                          <option value="3600" className="bg-slate-900 text-amber-300">🔥 Burn in 1h</option>
+                        </select>
+                      </div>
+
+                      {/* Direct Message Delete After View Toggle Button */}
+                      <button
+                        onClick={() => setDirectDeleteAfterView(!directDeleteAfterView)}
+                        className={`px-3 py-1.5 rounded-lg border text-xs font-mono font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                          directDeleteAfterView
+                            ? 'bg-purple-950/90 border-purple-500 text-purple-300 shadow-[0_0_15px_rgba(168,85,247,0.4)] animate-pulse'
+                            : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                        }`}
+                        title="Toggle Delete After View: Messages self-destruct 3s after recipient reveals & reads them"
+                      >
+                        <Eye className={`w-3.5 h-3.5 ${directDeleteAfterView ? 'text-purple-400' : 'text-slate-400'}`} />
+                        <span>{directDeleteAfterView ? '👁️ Delete After View: ON' : 'Delete After View: OFF'}</span>
+                      </button>
+
                       <button
                         onClick={() => setIsGhostMode(!isGhostMode)}
                         className={`px-3 py-1.5 rounded-lg border text-xs font-mono font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
@@ -2757,7 +2998,7 @@ export default function SecComPortal({ onEmergencyPurge }) {
 
                       <button
                         onClick={() => handlePurgeAllDirectMessages(selectedChatUser)}
-                        className="px-3 py-1.5 rounded-lg bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-500/40 text-xs font-mono flex items-center gap-1"
+                        className="px-3 py-1.5 rounded-lg bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-500/40 text-xs font-mono flex items-center gap-1 cursor-pointer"
                       >
                         <Flame className="w-3.5 h-3.5 text-rose-400" />
                         <span>Clear Chat with {selectedChatUser}</span>
@@ -2872,14 +3113,52 @@ export default function SecComPortal({ onEmergencyPurge }) {
                             </div>
                           </div>
 
-                          {msg.isGhost && (
-                            <div className="text-[10px] font-mono text-purple-300 bg-purple-900/60 px-2 py-0.5 rounded border border-purple-500/40 flex items-center gap-1 w-max my-1 animate-pulse">
-                              <Ghost className="w-3 h-3 text-purple-400" />
-                              <span>Ghost Mode (Auto-destructs after view)</span>
+                          {msg.deleteAfterView && !msg.isRevealed ? (
+                            <div className="p-3 rounded-xl bg-slate-950/90 border border-purple-500/60 space-y-2 my-1 font-mono text-xs">
+                              <div className="flex items-center justify-between text-purple-300">
+                                <span className="flex items-center gap-1.5 font-bold">
+                                  <Eye className="w-4 h-4 text-purple-400 animate-pulse" />
+                                  👁️ Delete-After-View Message
+                                </span>
+                                <span className="text-[9px] bg-purple-950 px-2 py-0.5 rounded text-purple-200 border border-purple-500/40">
+                                  View Once
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-slate-400">Content protected. Self-destructs 3s after reveal.</p>
+                              <button
+                                onClick={() => handleRevealDeleteAfterViewMessage(selectedChatUser, msg.id, false)}
+                                className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-[0_0_12px_rgba(168,85,247,0.4)] cursor-pointer"
+                              >
+                                <Eye className="w-3.5 h-3.5" />
+                                <span>Tap to Reveal & Read</span>
+                              </button>
                             </div>
-                          )}
+                          ) : (
+                            <>
+                              {msg.deleteAfterView && msg.isRevealed && (
+                                <div className="text-[10px] font-mono text-rose-300 bg-rose-950/80 px-2.5 py-1 rounded-lg border border-rose-500/60 flex items-center gap-1.5 w-max my-1 animate-pulse">
+                                  <Flame className="w-3.5 h-3.5 text-rose-400" />
+                                  <span>👁️ Viewed! Burning in {Math.max(0, 3 - Math.floor((nowTimestamp - (msg.revealedTimestamp || Date.now())) / 1000))}s...</span>
+                                </div>
+                              )}
 
-                          <p className="text-sm text-slate-100 font-sans font-medium">{msg.text}</p>
+                              {msg.autoBurn && (
+                                <div className="text-[10px] font-mono text-amber-300 bg-amber-950/70 px-2.5 py-1 rounded-lg border border-amber-500/50 flex items-center gap-1.5 w-max my-1">
+                                  <Flame className="w-3.5 h-3.5 text-amber-400 animate-spin" />
+                                  <span>🔥 Self-Destructs in {Math.max(0, msg.autoBurn - Math.floor((nowTimestamp - (msg.createdTimestamp || Date.parse(msg.time) || Date.now())) / 1000))}s</span>
+                                </div>
+                              )}
+
+                              {msg.isGhost && (
+                                <div className="text-[10px] font-mono text-purple-300 bg-purple-900/60 px-2 py-0.5 rounded border border-purple-500/40 flex items-center gap-1 w-max my-1 animate-pulse">
+                                  <Ghost className="w-3 h-3 text-purple-400" />
+                                  <span>Ghost Mode (Auto-destructs after view)</span>
+                                </div>
+                              )}
+
+                              <p className="text-sm text-slate-100 font-sans font-medium">{msg.text}</p>
+                            </>
+                          )}
 
                           <div className="pt-1 flex items-center justify-between text-[9px] text-slate-400 font-mono bg-slate-950/70 p-1.5 rounded border border-slate-800">
                             <span className="truncate max-w-[240px]">Payload: {msg.cipher}</span>
@@ -2940,7 +3219,40 @@ export default function SecComPortal({ onEmergencyPurge }) {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {/* Direct Message Self-Destruct Timer Dropdown Selector */}
+                    <div className="flex items-center gap-1 bg-slate-950 border border-amber-500/40 rounded-lg px-2.5 py-1.5 font-mono text-xs">
+                      <Flame className="w-3.5 h-3.5 text-amber-400" />
+                      <select
+                        value={directAutoBurnSeconds}
+                        onChange={(e) => setDirectAutoBurnSeconds(e.target.value)}
+                        className="bg-transparent text-xs font-mono text-amber-300 focus:outline-none cursor-pointer"
+                        title="Set Direct Message Self-Destruction Timer for outbound messages"
+                      >
+                        <option value="none" className="bg-slate-900 text-slate-200">Timer: Off</option>
+                        <option value="5" className="bg-slate-900 text-amber-300">🔥 Burn in 5s</option>
+                        <option value="10" className="bg-slate-900 text-amber-300">🔥 Burn in 10s</option>
+                        <option value="30" className="bg-slate-900 text-amber-300">🔥 Burn in 30s</option>
+                        <option value="60" className="bg-slate-900 text-amber-300">🔥 Burn in 1m</option>
+                        <option value="300" className="bg-slate-900 text-amber-300">🔥 Burn in 5m</option>
+                        <option value="3600" className="bg-slate-900 text-amber-300">🔥 Burn in 1h</option>
+                      </select>
+                    </div>
+
+                    {/* Direct Message Delete After View Toggle Button */}
+                    <button
+                      onClick={() => setDirectDeleteAfterView(!directDeleteAfterView)}
+                      className={`px-3 py-1.5 rounded-lg border text-xs font-mono font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                        directDeleteAfterView
+                          ? 'bg-purple-950/90 border-purple-500 text-purple-300 shadow-[0_0_15px_rgba(168,85,247,0.4)] animate-pulse'
+                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                      title="Toggle Delete After View: Messages self-destruct 3s after recipient reveals & reads them"
+                    >
+                      <Eye className={`w-3.5 h-3.5 ${directDeleteAfterView ? 'text-purple-400' : 'text-slate-400'}`} />
+                      <span>{directDeleteAfterView ? '👁️ Delete After View: ON' : 'Delete After View: OFF'}</span>
+                    </button>
+
                     <button
                       onClick={() => setIsGhostMode(!isGhostMode)}
                       className={`px-3 py-1.5 rounded-lg border text-xs font-mono font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
@@ -3034,14 +3346,52 @@ export default function SecComPortal({ onEmergencyPurge }) {
                           </div>
                         </div>
 
-                        {msg.isGhost && (
-                          <div className="text-[10px] font-mono text-purple-300 bg-purple-900/60 px-2 py-0.5 rounded border border-purple-500/40 flex items-center gap-1 w-max my-1 animate-pulse">
-                            <Ghost className="w-3 h-3 text-purple-400" />
-                            <span>Ghost Mode (Auto-destructs after view)</span>
+                        {msg.deleteAfterView && !msg.isRevealed ? (
+                          <div className="p-3 rounded-xl bg-slate-950/90 border border-purple-500/60 space-y-2 my-1 font-mono text-xs">
+                            <div className="flex items-center justify-between text-purple-300">
+                              <span className="flex items-center gap-1.5 font-bold">
+                                <Eye className="w-4 h-4 text-purple-400 animate-pulse" />
+                                👁️ Delete-After-View Message
+                              </span>
+                              <span className="text-[9px] bg-purple-950 px-2 py-0.5 rounded text-purple-200 border border-purple-500/40">
+                                View Once
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-400">Content protected. Self-destructs 3s after reveal.</p>
+                            <button
+                              onClick={() => handleRevealDeleteAfterViewMessage(activeUser?.username, msg.id, false)}
+                              className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-[0_0_12px_rgba(168,85,247,0.4)] cursor-pointer"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                              <span>Tap to Reveal & Read</span>
+                            </button>
                           </div>
-                        )}
+                        ) : (
+                          <>
+                            {msg.deleteAfterView && msg.isRevealed && (
+                              <div className="text-[10px] font-mono text-rose-300 bg-rose-950/80 px-2.5 py-1 rounded-lg border border-rose-500/60 flex items-center gap-1.5 w-max my-1 animate-pulse">
+                                <Flame className="w-3.5 h-3.5 text-rose-400" />
+                                <span>👁️ Viewed! Burning in {Math.max(0, 3 - Math.floor((nowTimestamp - (msg.revealedTimestamp || Date.now())) / 1000))}s...</span>
+                              </div>
+                            )}
 
-                        <p className="text-sm text-slate-100 font-sans font-medium">{msg.text}</p>
+                            {msg.autoBurn && (
+                              <div className="text-[10px] font-mono text-amber-300 bg-amber-950/70 px-2.5 py-1 rounded-lg border border-amber-500/50 flex items-center gap-1.5 w-max my-1">
+                                <Flame className="w-3.5 h-3.5 text-amber-400 animate-spin" />
+                                <span>🔥 Self-Destructs in {Math.max(0, msg.autoBurn - Math.floor((nowTimestamp - (msg.createdTimestamp || Date.parse(msg.time) || Date.now())) / 1000))}s</span>
+                              </div>
+                            )}
+
+                            {msg.isGhost && (
+                              <div className="text-[10px] font-mono text-purple-300 bg-purple-900/60 px-2 py-0.5 rounded border border-purple-500/40 flex items-center gap-1 w-max my-1 animate-pulse">
+                                <Ghost className="w-3 h-3 text-purple-400" />
+                                <span>Ghost Mode (Auto-destructs after view)</span>
+                              </div>
+                            )}
+
+                            <p className="text-sm text-slate-100 font-sans font-medium">{msg.text}</p>
+                          </>
+                        )}
 
                         <div className="pt-1 flex items-center justify-between text-[9px] text-slate-400 font-mono bg-slate-950/70 p-1.5 rounded border border-slate-800">
                           <span className="truncate max-w-[240px]">Payload: {msg.cipher}</span>
